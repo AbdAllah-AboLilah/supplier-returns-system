@@ -1,0 +1,16 @@
+{
+  "name": "نظام إدارة مرتجعات الموردين",
+  "short_name": "مرتجعات الموردين",
+  "description": "إدارة مرتجعات الموردين، ربط الأصناف، وتكاليف الموردين",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#F5F6F8",
+  "theme_color": "#1F2A44",
+  "lang": "ar",
+  "dir": "rtl",
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

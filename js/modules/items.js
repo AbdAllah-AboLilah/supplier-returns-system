@@ -1,0 +1,167 @@
+// =========================================================
+// modules/items.js — قاعدة أصناف ERP
+// The base item catalog. Item identity is the generated `id`
+// (never the name) so renames never break links from suppliers.
+// =========================================================
+import { getAll, getById, put, remove, getByIndex } from '../core/db.js';
+import { uid, nowIso, fmtMoney, fmtInt, escapeHtml, debounce, fuzzyIncludes,
+         openModal, confirmDialog, toast, paginate, renderPagination, el, qs } from '../core/utils.js';
+import { logAction } from '../core/audit.js';
+import { navigate } from '../core/router.js';
+import { autosaveField } from '../core/autosave.js';
+
+const state = { page: 1, pageSize: 50, query: '' };
+
+export async function findErpItems(query, limit = 8) {
+  const items = await getAll('erpItems');
+  const filtered = items.filter(i => fuzzyIncludes(i.name, query) || fuzzyIncludes(i.barcode || '', query));
+  return filtered.slice(0, limit);
+}
+
+export async function getErpItemsCount() {
+  return (await getAll('erpItems')).length;
+}
+
+export async function renderItemsList(container) {
+  const all = await getAll('erpItems');
+  const supplierLinks = await getAll('supplierItems');
+  const linkCountByErp = {};
+  supplierLinks.forEach(si => { if (si.erpItemId) linkCountByErp[si.erpItemId] = (linkCountByErp[si.erpItemId] || 0) + 1; });
+
+  const filtered = all
+    .filter(i => fuzzyIncludes(i.name, state.query) || fuzzyIncludes(i.barcode || '', state.query))
+    .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ar'));
+
+  container.innerHTML = `
+    <div class="card">
+      <div class="table-toolbar">
+        <input type="search" id="items-search" placeholder="🔎 بحث بالاسم أو الباركود" style="max-width:280px;" value="${escapeHtml(state.query)}">
+        <div class="spacer"></div>
+        <a href="#/items/import" class="btn btn-ghost">⇪ استيراد من Excel</a>
+        <button class="btn btn-primary" id="btn-add-item">+ إضافة صنف</button>
+      </div>
+      ${filtered.length ? `
+      <div class="table-wrap" style="border:none;border-radius:0;">
+        <table class="data-table">
+          <thead><tr>
+            <th>اسم الصنف</th><th>الباركود</th><th class="num">التكلفة الأساسية</th><th class="num">عدد الموردين المرتبطين</th><th></th>
+          </tr></thead>
+          <tbody id="items-tbody"></tbody>
+        </table>
+      </div>` : `
+      <div class="empty-state">
+        <div class="empty-icon">📦</div>
+        <div class="empty-title">لا توجد أصناف بعد</div>
+        <div class="empty-hint">أضف صنفًا يدويًا أو استورد قائمة من Excel</div>
+      </div>`}
+      <div id="items-pagination"></div>
+    </div>
+  `;
+
+  const { slice, totalPages, page, total } = paginate(filtered, state.page, state.pageSize);
+  const tbody = qs('#items-tbody', container);
+  if (tbody) {
+    tbody.innerHTML = slice.map(i => `
+      <tr class="row-link" data-id="${i.id}">
+        <td><b>${escapeHtml(i.name)}</b>${i.category ? `<div class="small text-dim">${escapeHtml(i.category)}</div>` : ''}</td>
+        <td class="num text-dim">${escapeHtml(i.barcode || '—')}</td>
+        <td class="num">${fmtMoney(i.baseCost)}</td>
+        <td class="num">${fmtInt(linkCountByErp[i.id] || 0)}</td>
+        <td><button class="btn btn-sm btn-ghost btn-edit-item" data-id="${i.id}">تعديل</button></td>
+      </tr>
+    `).join('');
+    tbody.querySelectorAll('tr.row-link').forEach(row => {
+      row.addEventListener('click', (e) => {
+        if (e.target.closest('.btn-edit-item')) return;
+        openItemForm(container, row.dataset.id);
+      });
+    });
+    tbody.querySelectorAll('.btn-edit-item').forEach(b => {
+      b.addEventListener('click', (e) => { e.stopPropagation(); openItemForm(container, b.dataset.id); });
+    });
+  }
+
+  const pagWrap = qs('#items-pagination', container);
+  if (pagWrap && total > 0) {
+    pagWrap.appendChild(renderPagination({
+      page, totalPages, total, pageSize: state.pageSize,
+      onPage: (p) => { state.page = p; renderItemsList(container); },
+      onPageSize: (s) => { state.pageSize = s; state.page = 1; renderItemsList(container); },
+    }));
+  }
+
+  qs('#items-search', container).addEventListener('input', debounce((e) => {
+    state.query = e.target.value; state.page = 1; renderItemsList(container);
+  }, 200));
+
+  qs('#btn-add-item', container).addEventListener('click', () => openItemForm(container, null));
+}
+
+function openItemForm(container, itemId) {
+  getById('erpItems', itemId).then((existing) => {
+    const isEdit = !!existing;
+    const snapshot = existing ? { ...existing } : null;
+    let recordId = existing?.id || null;
+
+    const { node } = openModal({
+      title: isEdit ? 'تعديل صنف' : 'إضافة صنف جديد',
+      bodyHtml: `
+        <div class="field">
+          <div class="field-label-row"><label style="margin:0;">اسم الصنف *</label><span class="autosave-status" id="item-status"></span></div>
+          <input type="text" id="f-name" value="${escapeHtml(existing?.name || '')}">
+        </div>
+        <div class="form-row">
+          <div class="field"><label>الباركود</label><input type="text" id="f-barcode" value="${escapeHtml(existing?.barcode || '')}"></div>
+          <div class="field"><label>التكلفة الأساسية</label><input type="number" step="0.01" id="f-cost" value="${existing?.baseCost ?? ''}"></div>
+        </div>
+        <div class="field"><label>القسم / التصنيف (اختياري)</label><input type="text" id="f-category" value="${escapeHtml(existing?.category || '')}"></div>
+        <div class="hint">يتم الحفظ تلقائيًا أثناء الكتابة.</div>
+      `,
+      footerButtons: [
+        {
+          label: 'إلغاء', className: 'btn-ghost',
+          onClick: async (c) => {
+            if (!isEdit && recordId) { await remove('erpItems', recordId); }
+            else if (isEdit && snapshot) { await put('erpItems', snapshot); }
+            c();
+            renderItemsList(container);
+          },
+        },
+        {
+          label: 'تم', className: 'btn-primary',
+          onClick: async (c) => {
+            await persist();
+            if (!recordId) { toast('اسم الصنف مطلوب', 'error'); return; }
+            toast(isEdit ? 'تم حفظ التعديلات' : 'تمت إضافة الصنف', 'success');
+            c();
+            renderItemsList(container);
+          },
+        },
+      ],
+    });
+
+    async function persist() {
+      const name = qs('#f-name', node).value.trim();
+      if (!name) return;
+      const record = {
+        id: recordId || uid(),
+        name,
+        barcode: qs('#f-barcode', node).value.trim(),
+        baseCost: Number(qs('#f-cost', node).value) || 0,
+        category: qs('#f-category', node).value.trim(),
+        createdAt: recordId ? (existing?.createdAt || nowIso()) : nowIso(),
+        updatedAt: nowIso(),
+      };
+      await put('erpItems', record);
+      if (!recordId) {
+        recordId = record.id;
+        await logAction('إضافة صنف', 'erpItem', recordId, name);
+      }
+    }
+
+    const statusEl = qs('#item-status', node);
+    ['f-name', 'f-barcode', 'f-cost', 'f-category'].forEach(id => {
+      autosaveField(qs('#' + id, node), () => persist(), { statusEl: id === 'f-name' ? statusEl : null, delay: 500 });
+    });
+  });
+}

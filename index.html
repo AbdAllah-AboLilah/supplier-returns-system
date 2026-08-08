@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>نظام إدارة مرتجعات الموردين</title>
+<meta name="theme-color" content="#1F2A44">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;900&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/styles.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+</head>
+<body>
+
+<div id="app-shell">
+
+  <!-- Sidebar -->
+  <aside id="sidebar">
+    <div class="brand">
+      <span class="brand-mark">↩︎</span>
+      <div class="brand-text">
+        <strong>مرتجعات الموردين</strong>
+        <small>نظام إدارة المخزون والمرتجعات</small>
+      </div>
+    </div>
+
+    <nav id="main-nav">
+      <a href="#/dashboard" class="nav-link" data-nav="dashboard">
+        <span class="nav-icon">⌂</span> الرئيسية
+      </a>
+
+      <div class="nav-group">
+        <div class="nav-group-title">الأصناف</div>
+        <a href="#/items" class="nav-link" data-nav="items">قاعدة أصناف ERP</a>
+        <a href="#/items/import" class="nav-link" data-nav="items-import">استيراد Excel</a>
+        <a href="#/supplier-items/unlinked" class="nav-link" data-nav="unlinked">أصناف غير مرتبطة</a>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-group-title">الموردون</div>
+        <a href="#/suppliers" class="nav-link" data-nav="suppliers">قائمة الموردين</a>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-group-title">المرتجعات</div>
+        <a href="#/returns/active" class="nav-link" data-nav="returns-active">المرتجعات النشطة</a>
+        <a href="#/returns/sent" class="nav-link" data-nav="returns-sent">المرتجعات المرسلة</a>
+        <a href="#/returns/unregistered" class="nav-link" data-nav="returns-unregistered">غير المسجلة على ERP</a>
+        <a href="#/returns/archive" class="nav-link" data-nav="returns-archive">الأرشيف</a>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-group-title">النظام</div>
+        <a href="#/audit" class="nav-link" data-nav="audit">سجل العمليات</a>
+      </div>
+    </nav>
+
+    <div class="sidebar-footer">
+      <span id="storage-indicator" title="التخزين المحلي">⬢ IndexedDB محلي</span>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div id="main-col">
+    <header id="topbar">
+      <button id="menu-toggle" aria-label="القائمة">☰</button>
+      <div id="topbar-title">الرئيسية</div>
+      <div id="topbar-actions"></div>
+    </header>
+
+    <main id="app-content" aria-live="polite">
+      <!-- views render here -->
+    </main>
+  </div>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
