@@ -6,6 +6,7 @@
 import { registerRoute, initRouter } from './core/router.js';
 import { qs, qsa, toast } from './core/utils.js';
 import { APP_VERSION } from './core/version.js';
+import { getSyncStatus, onSyncStatusChange } from './core/sync-status.js';
 
 import { renderDashboard } from './modules/dashboard.js';
 import { renderSuppliersList, renderSupplierDetail } from './modules/suppliers.js';
@@ -59,6 +60,21 @@ const versionBadge = document.createElement('div');
 versionBadge.id = 'version-badge';
 versionBadge.textContent = `الإصدار ${APP_VERSION}`;
 qs('.sidebar-footer').prepend(versionBadge);
+
+// ---------- Connectivity status dot ----------
+
+const STATUS_LABELS = { online: 'متصل بالإنترنت', syncing: 'جارِ رفع البيانات...', offline: 'غير متصل — التعديلات محفوظة محليًا' };
+
+const statusEl = document.createElement('div');
+statusEl.id = 'sync-status';
+
+function renderStatus(status) {
+  statusEl.className = `sync-status ${status}`;
+  statusEl.innerHTML = `<span class="sync-dot"></span><span>${STATUS_LABELS[status]}</span>`;
+}
+renderStatus(getSyncStatus());
+onSyncStatusChange(renderStatus);
+qs('.sidebar-footer').prepend(statusEl);
 
 // ---------- PWA: register service worker + auto-update ----------
 

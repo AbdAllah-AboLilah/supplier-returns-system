@@ -88,6 +88,7 @@ export async function exportToExcel(ret, supplier, lines, keys) {
   const shopName = await getSetting('shopName', '');
   const cols = COLUMNS.filter(c => keys.includes(c.key));
   const total = lines.reduce((s, l) => s + (Number(l.total) || 0), 0);
+  const totalQty = lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
 
   const aoa = [
     shopName ? [shopName] : null,
@@ -100,6 +101,7 @@ export async function exportToExcel(ret, supplier, lines, keys) {
     cols.map(c => c.label),
     ...lines.map(l => cols.map(c => cellValue(l, c.key))),
     [],
+    keys.includes('qty') ? ['إجمالي الكمية', totalQty] : null,
     ['الإجمالي', ...Array(Math.max(cols.length - 2, 0)).fill(''), keys.includes('total') ? total : ''],
   ].filter(Boolean);
 
@@ -117,6 +119,7 @@ export async function exportToExcel(ret, supplier, lines, keys) {
 function buildReportElement(shopName, ret, supplier, lines, keys, { compact = false } = {}) {
   const cols = COLUMNS.filter(c => keys.includes(c.key));
   const total = lines.reduce((s, l) => s + (Number(l.total) || 0), 0);
+  const totalQty = lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
   const wrap = document.createElement('div');
   wrap.style.cssText = `direction:rtl;background:#fff;padding:${compact ? '14px' : '28px'};font-family:'Tajawal',system-ui,sans-serif;color:#161C2E;width:${compact ? '300px' : '640px'};`;
   wrap.innerHTML = `
@@ -124,22 +127,22 @@ function buildReportElement(shopName, ret, supplier, lines, keys, { compact = fa
       <div>
         ${shopName ? `<div style="font-weight:900;font-size:${compact ? '12px' : '14px'};color:#5B6479;margin-bottom:2px;">${escapeHtml(shopName)}</div>` : ''}
         <div style="font-weight:900;font-size:${compact ? '15px' : '18px'};">مرتجعة ${escapeHtml(ret.returnNumber)}</div>
-        <div style="font-size:${compact ? '11px' : '13px'};color:#5B6479;margin-top:4px;">${escapeHtml(supplier?.name || '—')}</div>
+        <div style="font-size:${compact ? '11px' : '13px'};color:#5B6479;margin-top:4px;font-weight:600;">${escapeHtml(supplier?.name || '—')}</div>
       </div>
-      <div style="font-size:${compact ? '10px' : '12px'};color:#8A93A6;text-align:left;">${fmtDate(ret.createdAt, true)}</div>
+      <div style="font-size:${compact ? '10px' : '12px'};color:#5B6479;text-align:left;font-weight:600;">${fmtDate(ret.createdAt, true)}</div>
     </div>
     <table style="width:100%;border-collapse:collapse;font-size:${compact ? '10.5px' : '13px'};">
       <thead>
-        <tr>${cols.map(c => `<th style="text-align:right;padding:6px 8px;border-bottom:1px solid #CBD1DE;color:#5B6479;font-size:${compact ? '9.5px' : '11px'};">${escapeHtml(c.label)}</th>`).join('')}</tr>
+        <tr>${cols.map(c => `<th style="text-align:right;padding:6px 8px;border-bottom:1px solid #CBD1DE;color:#5B6479;font-size:${compact ? '9.5px' : '11px'};font-weight:700;">${escapeHtml(c.label)}</th>`).join('')}</tr>
       </thead>
       <tbody>
-        ${lines.map(l => `<tr>${cols.map(c => `<td style="padding:6px 8px;border-bottom:1px solid #E3E6EC;">${c.key === 'cost' || c.key === 'total' ? fmtMoney(cellValue(l, c.key)) : c.key === 'qty' ? fmtInt(cellValue(l, c.key)) : escapeHtml(String(cellValue(l, c.key)))}</td>`).join('')}</tr>`).join('')}
+        ${lines.map(l => `<tr>${cols.map(c => `<td style="padding:6px 8px;border-bottom:1px solid #E3E6EC;font-weight:${c.key === 'supplierName' ? 700 : 600};">${c.key === 'cost' || c.key === 'total' ? fmtMoney(cellValue(l, c.key)) : c.key === 'qty' ? fmtInt(cellValue(l, c.key)) : escapeHtml(String(cellValue(l, c.key)))}</td>`).join('')}</tr>`).join('')}
       </tbody>
     </table>
-    ${keys.includes('total') ? `
     <div style="display:flex;justify-content:space-between;margin-top:14px;padding-top:10px;border-top:2px solid #1F2A44;font-weight:900;font-size:${compact ? '12px' : '15px'};">
-      <span>الإجمالي</span><span>${fmtMoney(total)} جنيه</span>
-    </div>` : ''}
+      ${keys.includes('qty') ? `<span>إجمالي الكمية: ${fmtInt(totalQty)}</span>` : '<span></span>'}
+      ${keys.includes('total') ? `<span>الإجمالي: ${fmtMoney(total)} جنيه</span>` : ''}
+    </div>
   `;
   return wrap;
 }
@@ -175,27 +178,28 @@ export async function exportToImage(ret, supplier, lines, keys) {
 
 export async function openThermalPrintView(ret, supplier, lines, keys) {
   const shopName = await getSetting('shopName', '');
-  const cols = COLUMNS.filter(c => keys.includes(c.key));
   const total = lines.reduce((s, l) => s + (Number(l.total) || 0), 0);
+  const totalQty = lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
   const win = window.open('', '_blank', 'width=380,height=640');
   if (!win) { toast('المتصفح منع فتح نافذة الطباعة، اسمح بالنوافذ المنبثقة وحاول مجددًا', 'error'); return; }
 
   // Kept deliberately simple: no flexbox, no fixed mm widths, no
   // margin set in two places at once. Thermal receipt drivers vary a
   // lot in what they render correctly — a fluid width with a single
-  // padding source and a small 2-column *table* (not flex) for the
-  // qty/price line is the combination least likely to clip or drop
-  // text on a real printer. If your paper is 58mm instead of 80mm,
-  // change the "size" line below to "58mm auto".
+  // padding source and small *tables* (not flex) for the value rows
+  // are the combination least likely to clip or drop text. Numbers
+  // are bold throughout — thin/regular strokes print faint on most
+  // thermal heads. If your paper is 58mm instead of 80mm, change the
+  // "size" line below to "58mm auto".
   const rowsHtml = lines.map(l => `
     <div class="tp-item">
       <div class="tp-item-name">${escapeHtml(l.supplierItemName)}</div>
-      ${(keys.includes('qty') || keys.includes('cost')) ? `
+      ${(keys.includes('qty') || keys.includes('cost') || keys.includes('total')) ? `
       <table class="tp-row"><tr>
-        ${keys.includes('qty') ? `<td>الكمية: ${fmtInt(l.qty)}</td>` : '<td></td>'}
-        ${keys.includes('cost') ? `<td>السعر: ${fmtMoney(l.unitCost)}</td>` : '<td></td>'}
+        ${keys.includes('qty') ? `<td>الكمية: ${fmtInt(l.qty)}</td>` : ''}
+        ${keys.includes('cost') ? `<td>السعر: ${fmtMoney(l.unitCost)}</td>` : ''}
+        ${keys.includes('total') ? `<td>الإجمالي: ${fmtMoney(l.total)}</td>` : ''}
       </tr></table>` : ''}
-      ${keys.includes('total') ? `<div class="tp-item-total">الإجمالي: ${fmtMoney(l.total)}</div>` : ''}
     </div>
   `).join('');
 
@@ -210,27 +214,23 @@ export async function openThermalPrintView(ret, supplier, lines, keys) {
       body {
         font-family: 'Tahoma', 'Arial', sans-serif;
         width: 100%;
-        padding: 4mm 3mm;
+        padding: 3mm 3mm;
         color: #000;
         font-size: 12px;
-        line-height: 1.5;
+        line-height: 1.3;
       }
       .tp-center { text-align: center; }
-      .tp-shop { font-size: 13px; font-weight: bold; margin-bottom: 2px; }
-      .tp-title { font-size: 15px; font-weight: bold; margin-bottom: 2px; }
-      .tp-sub { font-size: 11px; color:#333; }
-      .tp-divider { border-top: 1px dashed #000; margin: 8px 0; }
-      .tp-item { padding: 5px 0; border-bottom: 1px dotted #999; }
+      .tp-shop { font-size: 13px; font-weight: bold; margin-bottom: 1px; }
+      .tp-title { font-size: 15px; font-weight: bold; margin-bottom: 1px; }
+      .tp-sub { font-size: 11px; font-weight: 600; color:#000; }
+      .tp-divider { border-top: 1px dashed #000; margin: 5px 0; }
+      .tp-item { padding: 3px 0; border-bottom: 1px dotted #999; }
       .tp-item-name { font-weight: bold; word-break: break-word; overflow-wrap: break-word; }
-      .tp-row { width: 100%; border-collapse: collapse; table-layout: fixed; margin-top: 2px; }
-      .tp-row td { font-size: 11px; padding: 0; }
-      .tp-row td:first-child { text-align: right; }
-      .tp-row td:last-child { text-align: left; }
-      .tp-item-total { text-align: left; font-size: 11px; margin-top: 2px; }
-      .tp-grand { display: table; width: 100%; font-weight: bold; font-size: 14px; margin-top: 10px; }
-      .tp-grand span:first-child { display: table-cell; text-align: right; }
-      .tp-grand span:last-child { display: table-cell; text-align: left; }
-      .tp-footer { text-align: center; font-size: 10px; color: #555; margin-top: 14px; }
+      .tp-row { width: 100%; border-collapse: collapse; table-layout: fixed; margin-top: 1px; }
+      .tp-row td { font-size: 12px; font-weight: 700; padding: 0 1px; text-align: center; }
+      .tp-grand-row { width: 100%; border-collapse: collapse; table-layout: fixed; margin-top: 8px; padding-top: 6px; border-top: 1px solid #000; }
+      .tp-grand-row td { font-size: 14px; font-weight: 900; text-align: center; padding: 0; }
+      .tp-footer { text-align: center; font-size: 10px; font-weight: 600; color: #000; margin-top: 10px; }
       .tp-print-btn { display: block; width: 100%; margin-top: 16px; padding: 10px; font-size: 13px; }
       @media print { .tp-print-btn { display: none; } }
     </style></head>
@@ -243,7 +243,11 @@ export async function openThermalPrintView(ret, supplier, lines, keys) {
       </div>
       <div class="tp-divider"></div>
       ${rowsHtml}
-      ${keys.includes('total') ? `<div class="tp-grand"><span>الإجمالي</span><span>${fmtMoney(total)}</span></div>` : ''}
+      ${(keys.includes('qty') || keys.includes('total')) ? `
+      <table class="tp-grand-row"><tr>
+        ${keys.includes('qty') ? `<td>الكمية: ${fmtInt(totalQty)}</td>` : ''}
+        ${keys.includes('total') ? `<td>الإجمالي: ${fmtMoney(total)}</td>` : ''}
+      </tr></table>` : ''}
       <div class="tp-footer">${escapeHtml(shopName || 'نظام إدارة مرتجعات الموردين')}</div>
       <button class="tp-print-btn" onclick="window.print()">🖨 طباعة</button>
     </body></html>
