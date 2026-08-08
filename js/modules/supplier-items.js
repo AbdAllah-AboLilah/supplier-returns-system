@@ -24,8 +24,10 @@ export async function listBySupplier(supplierId) {
 
 export async function searchSupplierItems(supplierId, query, limit = 8) {
   const rows = await listBySupplier(supplierId);
-  const filtered = rows.filter(r => fuzzyIncludes(r.supplierItemName, query));
-  return filtered.slice(0, limit);
+  const filtered = rows.filter(r => fuzzyIncludes(r.supplierItemName, query)).slice(0, limit);
+  const erpItems = await getAll('erpItems');
+  const erpById = Object.fromEntries(erpItems.map(i => [i.id, i]));
+  return filtered.map(r => ({ ...r, erpItemName: r.erpItemId ? (erpById[r.erpItemId]?.name || null) : null }));
 }
 
 export async function getOrCreateSupplierItem(supplierId, name) {

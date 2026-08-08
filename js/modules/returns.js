@@ -12,7 +12,7 @@ import { uid, nowIso, fmtMoney, fmtDate, fmtInt, escapeHtml, fuzzyIncludes, debo
          openModal, confirmDialog, toast, el, qs, qsa, paginate, renderPagination } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
 import { navigate } from '../core/router.js';
-import { searchSupplierItems, getOrCreateSupplierItem } from './supplier-items.js';
+import { searchSupplierItems, getOrCreateSupplierItem, updateCost as updateSupplierItemCost } from './supplier-items.js';
 import { autosaveField } from '../core/autosave.js';
 import { openExportOptionsModal } from './return-export.js';
 
@@ -23,7 +23,33 @@ export async function listReturnsRaw() {
 }
 
 export async function getReturnItems(returnId) {
-  return getByIndex('returnItems', 'returnId', returnId);
+  const rows = await getByIndex('returnItems', 'returnId', returnId);
+  // Sort by insertion time, not by whatever order the index cursor
+  // happens to return (record ids are random UUIDs, not sortable) —
+  // this is what keeps the item you just added at the bottom of the
+  // list instead of appearing to jump to a random spot.
+  return rows.sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+}
+
+// A supplier item can get linked to an ERP item (or re-linked to a
+// different one) *after* it was already added to a return. Rather
+// than freezing that link forever, re-check it every time the return
+// is opened and quietly correct the line if the mapping has changed
+// since — so "غير مرتبط" never lingers after you've actually linked it.
+async function syncLineErpLinks(lines) {
+  for (const line of lines) {
+    const si = await getById('supplierItems', line.supplierItemId);
+    if (!si) continue;
+    if ((si.erpItemId || null) !== (line.erpItemId || null)) {
+      line.erpItemId = si.erpItemId || null;
+      line.erpItemName = null;
+      if (si.erpItemId) {
+        const erp = await getById('erpItems', si.erpItemId);
+        line.erpItemName = erp ? erp.name : null;
+      }
+      await put('returnItems', line);
+    }
+  }
 }
 
 export async function computeTotal(returnId) {
@@ -73,18 +99,32 @@ export async function createDraftReturn(supplierId) {
 
 async function touchReturn(ret) { ret.updatedAt = nowIso(); await put('returns', ret); }
 
-export async function addItemLine(returnId, supplierId, supplierItemName, qty) {
+export async function addItemLine(returnId, supplierId, supplierItemName, qty, costOverride) {
   const si = await getOrCreateSupplierItem(supplierId, supplierItemName);
+  const quantity = Number(qty) || 1;
+
+  let unitCost = Number(si.currentCost) || 0;
+  if (costOverride !== undefined && costOverride !== '' && costOverride !== null) {
+    const newCost = Number(costOverride);
+    if (!isNaN(newCost)) {
+      unitCost = newCost;
+      // A cost typed while adding to a return is, in practice, the
+      // freshest known price for this supplier item — record it as
+      // the current cost (with history) so it's the default suggestion
+      // next time, anywhere in the system. Past returns are untouched.
+      if (newCost !== Number(si.currentCost)) await updateSupplierItemCost(si.id, newCost);
+    }
+  }
+
   let erpItemName = null;
   if (si.erpItemId) {
     const erp = await getById('erpItems', si.erpItemId);
     erpItemName = erp ? erp.name : null;
   }
-  const unitCost = Number(si.currentCost) || 0;
-  const quantity = Number(qty) || 1;
   const line = {
     id: uid(), returnId, supplierItemId: si.id, supplierItemName: si.supplierItemName,
     erpItemId: si.erpItemId || null, erpItemName, qty: quantity, unitCost, total: quantity * unitCost,
+    createdAt: nowIso(),
   };
   await put('returnItems', line);
   const ret = await getById('returns', returnId);
@@ -96,7 +136,15 @@ export async function addItemLine(returnId, supplierId, supplierItemName, qty) {
 export async function updateLine(lineId, { qty, unitCost }) {
   const line = await getById('returnItems', lineId);
   if (qty !== undefined) line.qty = Number(qty) || 0;
-  if (unitCost !== undefined) line.unitCost = Number(unitCost) || 0;
+  if (unitCost !== undefined) {
+    const newCost = Number(unitCost) || 0;
+    line.unitCost = newCost;
+    // Same rule as above: editing the cost on a line is treated as
+    // updating the known cost for that supplier item going forward,
+    // without rewriting any other return that already used the old cost.
+    const si = await getById('supplierItems', line.supplierItemId);
+    if (si && newCost !== Number(si.currentCost)) await updateSupplierItemCost(si.id, newCost);
+  }
   line.total = line.qty * line.unitCost;
   await put('returnItems', line);
   const ret = await getById('returns', line.returnId);
@@ -300,6 +348,7 @@ export async function renderReturnDetail(container, returnId) {
   if (!ret) { container.innerHTML = `<div class="card card-pad">المرتجعة غير موجودة.</div>`; return; }
   const supplier = await getById('suppliers', ret.supplierId);
   const lines = await getReturnItems(returnId);
+  await syncLineErpLinks(lines);
   const totalQty = lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
   const totalValue = lines.reduce((s, l) => s + (Number(l.total) || 0), 0);
   const editable = ret.status === 'draft' || ret.editingUnlocked;
@@ -377,7 +426,8 @@ export async function renderReturnDetail(container, returnId) {
             <input type="text" id="add-item-name" placeholder="ابدأ الكتابة...">
             <div class="autocomplete-list" id="add-item-results" style="display:none;"></div>
           </div>
-          <div class="field" style="flex:0 0 100px;"><label>الكمية</label><input type="number" id="add-item-qty" value="1" min="1"></div>
+          <div class="field" style="flex:0 0 90px;"><label>الكمية</label><input type="number" id="add-item-qty" value="1" min="1"></div>
+          <div class="field" style="flex:0 0 110px;"><label>التكلفة</label><input type="number" step="0.01" id="add-item-cost" placeholder="0.00"></div>
           <div class="field" style="flex:0 0 auto;"><button class="btn btn-primary" id="btn-add-item">+ إضافة</button></div>
         </div>
       </div>` : ''}
@@ -478,6 +528,7 @@ function wireDetailEvents(container, ret, lines, supplier) {
 
   const nameInput = qs('#add-item-name', container);
   const resultsBox = qs('#add-item-results', container);
+  const costInput = qs('#add-item-cost', container);
   if (nameInput) {
     nameInput.addEventListener('input', debounce(async () => {
       const q = nameInput.value.trim();
@@ -485,16 +536,21 @@ function wireDetailEvents(container, ret, lines, supplier) {
       const matches = await searchSupplierItems(ret.supplierId, q, 8);
       const exact = matches.some(m => m.supplierItemName.trim().toLowerCase() === q.toLowerCase());
       let html = matches.map(m => `
-        <div class="autocomplete-item" data-name="${escapeHtml(m.supplierItemName)}">
+        <div class="autocomplete-item" data-name="${escapeHtml(m.supplierItemName)}" data-cost="${m.currentCost || 0}">
           <b>${escapeHtml(m.supplierItemName)}</b>
-          <div class="ac-sub">${m.erpItemName || (m.erpItemId ? '' : '⚠️ غير مرتبط بعد')} ${m.currentCost ? `· ${fmtMoney(m.currentCost)} ج` : ''}</div>
+          <div class="ac-sub">${m.erpItemName ? escapeHtml(m.erpItemName) : '⚠️ غير مرتبط بعد'} ${m.currentCost ? `· ${fmtMoney(m.currentCost)} ج` : ''}</div>
         </div>
       `).join('');
-      if (!exact) html += `<div class="autocomplete-item" data-name="${escapeHtml(q)}" style="color:var(--gold-dark);">+ إضافة "${escapeHtml(q)}" كصنف جديد لهذا المورد</div>`;
+      if (!exact) html += `<div class="autocomplete-item" data-name="${escapeHtml(q)}" data-cost="" style="color:var(--gold-dark);">+ إضافة "${escapeHtml(q)}" كصنف جديد لهذا المورد</div>`;
       resultsBox.innerHTML = html || `<div class="autocomplete-empty">لا توجد نتائج</div>`;
       resultsBox.style.display = 'block';
       resultsBox.querySelectorAll('.autocomplete-item').forEach(it => {
-        it.addEventListener('click', () => { nameInput.value = it.dataset.name; resultsBox.style.display = 'none'; });
+        it.addEventListener('click', () => {
+          nameInput.value = it.dataset.name;
+          if (costInput && it.dataset.cost) costInput.value = it.dataset.cost;
+          resultsBox.style.display = 'none';
+          costInput?.focus();
+        });
       });
     }, 200));
     document.addEventListener('click', (e) => { if (!e.target.closest('.autocomplete')) resultsBox.style.display = 'none'; }, { once: true });
@@ -503,8 +559,9 @@ function wireDetailEvents(container, ret, lines, supplier) {
   qs('#btn-add-item', container)?.addEventListener('click', async () => {
     const name = qs('#add-item-name', container).value.trim();
     const qty = qs('#add-item-qty', container).value;
+    const cost = qs('#add-item-cost', container)?.value;
     if (!name) { toast('اكتب اسم الصنف أولًا', 'error'); return; }
-    await addItemLine(ret.id, ret.supplierId, name, qty);
+    await addItemLine(ret.id, ret.supplierId, name, qty, cost);
     await renderReturnDetail(container, ret.id);
     qs('#add-item-name', container)?.focus();
   });

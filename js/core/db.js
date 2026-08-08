@@ -180,3 +180,29 @@ export async function getSetting(key, fallback = null) {
 export function setSetting(key, value) {
   return put('settings', { key, value });
 }
+
+// ---------- Full backup / restore (all stores, one JSON file) ----------
+
+export const ALL_STORES = ['suppliers', 'erpItems', 'supplierItems', 'costHistory', 'returns', 'returnItems', 'auditLog', 'counters', 'settings'];
+
+export function clearStore(storeName) {
+  return tx(storeName, 'readwrite').then(t => new Promise((resolve, reject) => {
+    const req = t.objectStore(storeName).clear();
+    req.onsuccess = () => resolve(true);
+    req.onerror = () => reject(req.error);
+  }));
+}
+
+export async function exportAllData() {
+  const data = {};
+  for (const name of ALL_STORES) data[name] = await getAll(name);
+  return data;
+}
+
+export async function importAllData(data) {
+  for (const name of ALL_STORES) {
+    if (!Array.isArray(data[name])) continue;
+    await clearStore(name);
+    if (data[name].length) await bulkPut(name, data[name]);
+  }
+}

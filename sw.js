@@ -9,7 +9,7 @@
 // "auto-update" actually work); when offline you fall back to
 // whatever was last cached.
 // =========================================================
-const CACHE_NAME = 'returns-system-v1.2.0';
+const CACHE_NAME = 'returns-system-v1.3.0';
 const APP_SHELL = [
   './',
   './index.html',
@@ -22,6 +22,7 @@ const APP_SHELL = [
   './js/core/router.js',
   './js/core/version.js',
   './js/core/autosave.js',
+  './js/core/brand.js',
   './js/modules/dashboard.js',
   './js/modules/suppliers.js',
   './js/modules/items.js',
@@ -30,6 +31,7 @@ const APP_SHELL = [
   './js/modules/returns.js',
   './js/modules/return-export.js',
   './js/modules/audit-log.js',
+  './js/modules/settings.js',
   './icons/icon.svg',
 ];
 

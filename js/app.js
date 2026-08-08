@@ -14,6 +14,8 @@ import { renderExcelImportWizard } from './modules/excel-import.js';
 import { renderUnlinkedView } from './modules/supplier-items.js';
 import { renderReturnsList, renderReturnDetail } from './modules/returns.js';
 import { renderAuditLogView } from './modules/audit-log.js';
+import { renderSettingsView } from './modules/settings.js';
+import { applyShopName } from './core/brand.js';
 
 // ---------- Route table ----------
 
@@ -33,6 +35,7 @@ registerRoute('/returns/archive', { navKey: 'returns-archive', title: 'الأر�
 registerRoute('/returns/:id', { navKey: 'returns-active', title: 'المرتجعة' }, ({ container, params }) => renderReturnDetail(container, params.id));
 
 registerRoute('/audit', { navKey: 'audit', title: 'سجل العمليات' }, ({ container }) => renderAuditLogView(container));
+registerRoute('/settings', { navKey: 'settings', title: 'الإعدادات' }, ({ container }) => renderSettingsView(container));
 
 // ---------- Shell chrome: nav highlighting + topbar title ----------
 
@@ -44,6 +47,7 @@ function onNavigate(meta) {
 }
 
 initRouter(qs('#app-content'), onNavigate);
+applyShopName();
 
 // ---------- Mobile nav toggle ----------
 

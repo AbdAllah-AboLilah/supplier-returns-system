@@ -9,8 +9,9 @@ import { uid, nowIso, fmtMoney, fmtInt, escapeHtml, debounce, fuzzyIncludes,
 import { logAction } from '../core/audit.js';
 import { navigate } from '../core/router.js';
 import { autosaveField } from '../core/autosave.js';
+import { listErpSupplierRelations } from './supplier-items.js';
 
-const state = { page: 1, pageSize: 50, query: '' };
+const state = { page: 1, pageSize: 50, query: '', category: '' };
 
 export async function findErpItems(query, limit = 8) {
   const items = await getAll('erpItems');
@@ -28,14 +29,22 @@ export async function renderItemsList(container) {
   const linkCountByErp = {};
   supplierLinks.forEach(si => { if (si.erpItemId) linkCountByErp[si.erpItemId] = (linkCountByErp[si.erpItemId] || 0) + 1; });
 
+  const categories = [...new Set(all.map(i => i.category).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ar'));
+
   const filtered = all
     .filter(i => fuzzyIncludes(i.name, state.query) || fuzzyIncludes(i.barcode || '', state.query))
+    .filter(i => !state.category || i.category === state.category)
     .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ar'));
 
   container.innerHTML = `
     <div class="card">
       <div class="table-toolbar">
         <input type="search" id="items-search" placeholder="🔎 بحث بالاسم أو الباركود" style="max-width:280px;" value="${escapeHtml(state.query)}">
+        ${categories.length ? `
+        <select id="items-category-filter" style="max-width:180px;">
+          <option value="">كل الأقسام</option>
+          ${categories.map(c => `<option value="${escapeHtml(c)}" ${state.category === c ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+        </select>` : ''}
         <div class="spacer"></div>
         <a href="#/items/import" class="btn btn-ghost">⇪ استيراد من Excel</a>
         <button class="btn btn-primary" id="btn-add-item">+ إضافة صنف</button>
@@ -66,18 +75,25 @@ export async function renderItemsList(container) {
         <td><b>${escapeHtml(i.name)}</b>${i.category ? `<div class="small text-dim">${escapeHtml(i.category)}</div>` : ''}</td>
         <td class="num text-dim">${escapeHtml(i.barcode || '—')}</td>
         <td class="num">${fmtMoney(i.baseCost)}</td>
-        <td class="num">${fmtInt(linkCountByErp[i.id] || 0)}</td>
+        <td class="num">
+          ${linkCountByErp[i.id]
+            ? `<button class="btn btn-sm btn-ghost btn-relations" data-id="${i.id}" data-name="${escapeHtml(i.name)}">${fmtInt(linkCountByErp[i.id])} مورد ↗</button>`
+            : `<span class="text-dim">0</span>`}
+        </td>
         <td><button class="btn btn-sm btn-ghost btn-edit-item" data-id="${i.id}">تعديل</button></td>
       </tr>
     `).join('');
     tbody.querySelectorAll('tr.row-link').forEach(row => {
       row.addEventListener('click', (e) => {
-        if (e.target.closest('.btn-edit-item')) return;
+        if (e.target.closest('.btn-edit-item') || e.target.closest('.btn-relations')) return;
         openItemForm(container, row.dataset.id);
       });
     });
     tbody.querySelectorAll('.btn-edit-item').forEach(b => {
       b.addEventListener('click', (e) => { e.stopPropagation(); openItemForm(container, b.dataset.id); });
+    });
+    tbody.querySelectorAll('.btn-relations').forEach(b => {
+      b.addEventListener('click', (e) => { e.stopPropagation(); openRelationsModal(b.dataset.id, b.dataset.name); });
     });
   }
 
@@ -94,7 +110,33 @@ export async function renderItemsList(container) {
     state.query = e.target.value; state.page = 1; renderItemsList(container);
   }, 200));
 
+  const catFilter = qs('#items-category-filter', container);
+  if (catFilter) catFilter.addEventListener('change', () => { state.category = catFilter.value; state.page = 1; renderItemsList(container); });
+
   qs('#btn-add-item', container).addEventListener('click', () => openItemForm(container, null));
+}
+
+async function openRelationsModal(erpItemId, itemName) {
+  const relations = await listErpSupplierRelations(erpItemId);
+  openModal({
+    title: `الموردون المرتبطون بـ "${itemName}"`,
+    wide: true,
+    bodyHtml: relations.length ? `
+      <table class="data-table">
+        <thead><tr><th>المورد</th><th>اسم الصنف عند المورد</th><th class="num">التكلفة</th></tr></thead>
+        <tbody>
+          ${relations.map(r => `
+            <tr>
+              <td>${escapeHtml(r.supplierName)}</td>
+              <td><b>${escapeHtml(r.supplierItemName)}</b></td>
+              <td class="num">${fmtMoney(r.currentCost)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    ` : `<div class="empty-state"><div class="empty-hint">لا يوجد موردون مرتبطون بهذا الصنف بعد</div></div>`,
+    footerButtons: [{ label: 'إغلاق', className: 'btn-ghost', onClick: (c) => c() }],
+  });
 }
 
 function openItemForm(container, itemId) {
