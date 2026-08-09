@@ -299,13 +299,13 @@ export async function renderReturnsList(container, filterKey, presetSupplierId =
         <tbody>
           ${rows.map(r => `
             <tr class="row-link" data-id="${r.id}">
-              <td class="text-mono">${escapeHtml(r.returnNumber)}</td>
-              <td>${escapeHtml(r.supplierName)}</td>
-              <td class="text-dim">${fmtDate(r.createdAt)}</td>
-              <td class="num">${fmtInt(r.itemCount)}</td>
-              <td class="num">${fmtMoney(r.total)}</td>
-              <td>${statusBadge(r)}</td>
-              <td>${erpBadge(r)}</td>
+              <td class="text-mono" data-label="رقم المرتجعة">${escapeHtml(r.returnNumber)}</td>
+              <td data-label="المورد">${escapeHtml(r.supplierName)}</td>
+              <td class="text-dim" data-label="التاريخ">${fmtDate(r.createdAt)}</td>
+              <td class="num" data-label="عدد الأصناف">${fmtInt(r.itemCount)}</td>
+              <td class="num" data-label="القيمة">${fmtMoney(r.total)}</td>
+              <td data-label="الحالة">${statusBadge(r)}</td>
+              <td data-label="ERP">${erpBadge(r)}</td>
             </tr>
           `).join('')}
         </tbody>
@@ -408,13 +408,13 @@ export async function renderReturnDetail(container, returnId) {
         <tbody>
           ${lines.map(l => `
             <tr data-line="${l.id}">
-              <td><b>${escapeHtml(l.supplierItemName)}</b></td>
-              <td>${l.erpItemName ? escapeHtml(l.erpItemName) : `<span class="badge badge-warn">⚠️ غير مرتبط</span>`}</td>
-              <td class="num">${editable ? `<input type="number" min="0" step="1" class="line-qty" data-id="${l.id}" value="${l.qty}" style="width:80px;text-align:center;">` : fmtInt(l.qty)}</td>
-              <td class="num">${editable
+              <td data-label="اسم الصنف عند المورد"><b>${escapeHtml(l.supplierItemName)}</b></td>
+              <td data-label="صنف النظام ERP">${l.erpItemName ? escapeHtml(l.erpItemName) : `<span class="badge badge-warn">⚠️ غير مرتبط</span>`}</td>
+              <td class="num" data-label="الكمية">${editable ? `<input type="number" min="0" step="1" class="line-qty" data-id="${l.id}" value="${l.qty}" style="width:80px;text-align:center;">` : fmtInt(l.qty)}</td>
+              <td class="num" data-label="تكلفة المورد">${editable
                 ? `<input type="number" min="0" step="0.01" class="line-cost ${l.costIsFallback ? 'cost-fallback' : ''}" data-id="${l.id}" value="${l.unitCost}" title="${l.costIsFallback ? 'تكلفة النظام الافتراضية — لسه محدّدتش تكلفة هذا المورد الفعلية' : ''}" style="width:100px;text-align:center;">`
                 : `<span class="${l.costIsFallback ? 'cost-fallback-text' : ''}" title="${l.costIsFallback ? 'تكلفة النظام الافتراضية — لسه محدّدتش تكلفة هذا المورد الفعلية' : ''}">${fmtMoney(l.unitCost)}</span>`}</td>
-              <td class="num text-mono" id="line-total-${l.id}">${fmtMoney(l.total)}</td>
+              <td class="num text-mono" id="line-total-${l.id}" data-label="الإجمالي">${fmtMoney(l.total)}</td>
               ${editable ? `<td><button class="btn btn-sm btn-ghost line-remove" data-id="${l.id}">حذف</button></td>` : ''}
             </tr>
           `).join('')}
@@ -423,9 +423,9 @@ export async function renderReturnDetail(container, returnId) {
           ${lines.some(l => l.costIsFallback) ? `<tr><td colspan="${editable ? 6 : 5}" style="padding-top:6px;"><span class="small" style="color:var(--red);">🔴 التكلفة باللون الأحمر هي تكلفة النظام الافتراضية — راجعها وأكّدها أو عدّلها لو مختلفة عن تكلفة المورد الفعلية.</span></td></tr>` : ''}
           <tr>
             <td colspan="2"><b>الإجمالي</b></td>
-            <td class="num text-mono" id="footer-total-qty">${fmtInt(totalQty)}</td>
+            <td class="num text-mono" id="footer-total-qty" data-label="إجمالي الكمية">${fmtInt(totalQty)}</td>
             <td></td>
-            <td class="num text-mono" id="footer-total-value"><b>${fmtMoney(totalValue)}</b></td>
+            <td class="num text-mono" id="footer-total-value" data-label="الإجمالي"><b>${fmtMoney(totalValue)}</b></td>
             ${editable ? '<td></td>' : ''}
           </tr>
         </tfoot>

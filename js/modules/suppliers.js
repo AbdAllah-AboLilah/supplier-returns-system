@@ -40,8 +40,8 @@ export async function renderSuppliersList(container) {
   if (tbody) {
     tbody.innerHTML = filtered.map(s => `
       <tr class="row-link" data-id="${s.id}">
-        <td><b>${escapeHtml(s.name)}</b></td>
-        <td class="text-dim">${escapeHtml(s.contact || '—')}</td>
+        <td data-label="اسم المورد"><b>${escapeHtml(s.name)}</b></td>
+        <td class="text-dim" data-label="جهة الاتصال">${escapeHtml(s.contact || '—')}</td>
         <td><button class="btn btn-sm btn-ghost btn-edit" data-id="${s.id}">تعديل</button></td>
       </tr>
     `).join('');

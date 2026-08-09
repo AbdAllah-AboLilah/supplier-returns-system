@@ -129,11 +129,11 @@ export async function renderSupplierItemsPanel(container, supplierId) {
         <tbody>
           ${rows.map(r => `
             <tr>
-              <td><b>${escapeHtml(r.supplierItemName)}</b></td>
-              <td>${r.erpItemId && erpById[r.erpItemId]
+              <td data-label="اسم الصنف عند المورد"><b>${escapeHtml(r.supplierItemName)}</b></td>
+              <td data-label="صنف ERP المرتبط">${r.erpItemId && erpById[r.erpItemId]
                   ? `<span class="badge badge-erp-yes">${escapeHtml(erpById[r.erpItemId].name)}</span>`
                   : `<span class="badge badge-warn">⚠️ غير مرتبط</span>`}</td>
-              <td class="num">${fmtMoney(r.currentCost)}</td>
+              <td class="num" data-label="التكلفة الحالية">${fmtMoney(r.currentCost)}</td>
               <td class="flex gap-8">
                 <button class="btn btn-sm btn-ghost btn-link" data-id="${r.id}">${r.erpItemId ? 'تغيير الربط' : 'ربط'}</button>
                 <button class="btn btn-sm btn-ghost btn-cost" data-id="${r.id}">التكلفة</button>
@@ -229,7 +229,7 @@ async function openHistoryModal(supplierItemId) {
     title: `سجل تكلفة "${row.supplierItemName}"`,
     bodyHtml: hist.length ? `
       <table class="data-table"><thead><tr><th>التكلفة</th><th>سارية من</th></tr></thead>
-      <tbody>${hist.map(h => `<tr><td class="num">${fmtMoney(h.cost)}</td><td class="num text-dim">${fmtDate(h.effectiveFrom, true)}</td></tr>`).join('')}</tbody></table>
+      <tbody>${hist.map(h => `<tr><td class="num" data-label="التكلفة">${fmtMoney(h.cost)}</td><td class="num text-dim" data-label="سارية من">${fmtDate(h.effectiveFrom, true)}</td></tr>`).join('')}</tbody></table>
     ` : `<div class="empty-state"><div class="empty-hint">لا يوجد سجل تكلفة بعد</div></div>`,
     footerButtons: [{ label: 'إغلاق', className: 'btn-ghost', onClick: (c) => c() }],
   });
@@ -248,9 +248,9 @@ export async function renderUnlinkedView(container) {
         <tbody>
           ${rows.map(r => `
             <tr>
-              <td>${escapeHtml(r.supplierName)}</td>
-              <td><b>${escapeHtml(r.supplierItemName)}</b></td>
-              <td class="num">${fmtMoney(r.currentCost)}</td>
+              <td data-label="المورد">${escapeHtml(r.supplierName)}</td>
+              <td data-label="اسم الصنف عند المورد"><b>${escapeHtml(r.supplierItemName)}</b></td>
+              <td class="num" data-label="التكلفة">${fmtMoney(r.currentCost)}</td>
               <td><button class="btn btn-sm btn-primary btn-link" data-id="${r.id}">ربط الآن</button></td>
             </tr>
           `).join('')}

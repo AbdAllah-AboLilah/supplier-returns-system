@@ -230,18 +230,18 @@ export async function openThermalPrintView(ret, supplier, lines, keys) {
         line-height: 1.15;
       }
       .tp-center { text-align: center; }
-      .tp-letterhead { width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 2px; }
+      .tp-letterhead { width: 100%; border-collapse: collapse; table-layout: fixed; }
       .tp-letterhead td { vertical-align: top; font-size: 10px; font-weight: 700; }
       .tp-letterhead td:first-child { text-align: right; }
       .tp-letterhead td:last-child { text-align: left; }
       .tp-shop { font-size: 13px; font-weight: bold; }
-      .tp-tagline { font-size: 9px; font-weight: 600; }
+      .tp-tagline { font-size: 9px; font-weight: 700; white-space: nowrap; margin: 1px 0 2px; }
       .tp-title { font-size: 15px; font-weight: bold; margin-bottom: 0; }
       .tp-sub { font-size: 11px; font-weight: 600; color:#000; }
       .tp-divider { border-top: 1px dashed #000; margin: 3px 0; }
-      .tp-item { padding: 2px 0; border-bottom: 1px dotted #999; }
+      .tp-item { padding: 2px 0; border-bottom: 1px dashed #000; }
       .tp-item-name { font-weight: bold; word-break: break-word; overflow-wrap: break-word; }
-      .tp-item-sub { font-size: 10px; font-weight: 600; color: #333; margin-top: 1px; }
+      .tp-item-sub { font-size: 11px; font-weight: bold; color: #000; margin-top: 1px; }
       .tp-row { width: 100%; border-collapse: collapse; table-layout: fixed; margin-top: 1px; }
       .tp-row td { font-size: 12px; font-weight: 700; padding: 0 1px; text-align: center; }
       .tp-grand-row { width: 100%; border-collapse: collapse; table-layout: fixed; margin-top: 5px; padding-top: 4px; border-top: 1px solid #000; }
@@ -251,12 +251,10 @@ export async function openThermalPrintView(ret, supplier, lines, keys) {
     </style></head>
     <body>
       <table class="tp-letterhead"><tr>
-        <td>
-          ${shopName ? `<div class="tp-shop">${escapeHtml(shopName)}</div>` : ''}
-          <div class="tp-tagline">نظام إدارة المخزون والمرتجعات</div>
-        </td>
+        <td>${shopName ? `<div class="tp-shop">${escapeHtml(shopName)}</div>` : ''}</td>
         <td>عبدالله &lt;Abo-Lilah&gt;</td>
       </tr></table>
+      <div class="tp-tagline">نظام إدارة المخزون والمرتجعات</div>
       <div class="tp-divider"></div>
       <div class="tp-center">
         <div class="tp-title">مرتجعة موردين</div>

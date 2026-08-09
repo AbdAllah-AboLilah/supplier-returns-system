@@ -68,11 +68,11 @@ export async function renderDashboard(container) {
         <tbody>
           ${recent.map(r => `
             <tr class="row-link" data-id="${r.id}">
-              <td class="text-mono">${escapeHtml(r.returnNumber)}</td>
-              <td>${escapeHtml(r.supplierName)}</td>
-              <td class="num">${fmtMoney(r.total)}</td>
-              <td>${r.status === 'closed' ? '<span class="badge badge-closed">مغلقة</span>' : r.status === 'sent' ? (r.editingUnlocked ? '<span class="badge badge-editing">قيد التعديل</span>' : '<span class="badge badge-sent">تم الإرسال</span>') : '<span class="badge badge-draft">مسودة</span>'}</td>
-              <td class="text-dim small">${fmtDate(r.updatedAt, true)}</td>
+              <td class="text-mono" data-label="رقم المرتجعة">${escapeHtml(r.returnNumber)}</td>
+              <td data-label="المورد">${escapeHtml(r.supplierName)}</td>
+              <td class="num" data-label="القيمة">${fmtMoney(r.total)}</td>
+              <td data-label="الحالة">${r.status === 'closed' ? '<span class="badge badge-closed">مغلقة</span>' : r.status === 'sent' ? (r.editingUnlocked ? '<span class="badge badge-editing">قيد التعديل</span>' : '<span class="badge badge-sent">تم الإرسال</span>') : '<span class="badge badge-draft">مسودة</span>'}</td>
+              <td class="text-dim small" data-label="آخر تعديل">${fmtDate(r.updatedAt, true)}</td>
             </tr>
           `).join('')}
         </tbody>

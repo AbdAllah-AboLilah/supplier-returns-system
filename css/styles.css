@@ -507,3 +507,33 @@ textarea{ resize:vertical; min-height:70px; }
   #app-content{ padding:16px; }
   .form-row{ flex-direction:column; gap:0; }
 }
+
+/* Below this width, every table.data-table becomes a stack of cards
+   instead of a horizontally-scrolling table — each <td> needs a
+   data-label attribute (added at render time) so its column header
+   can still show, via ::before, next to the value. */
+@media (max-width:640px){
+  table.data-table thead{ display:none; }
+  table.data-table, table.data-table tbody, table.data-table tr{ display:block; width:100%; }
+  table.data-table tr{
+    display:block; border:1px solid var(--line); border-radius:var(--radius-m);
+    margin-bottom:10px; padding:4px 12px; background:var(--paper-raised);
+  }
+  table.data-table tr.row-link{ cursor:pointer; }
+  table.data-table td{
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    padding:8px 0; border-bottom:1px solid var(--line); text-align:left;
+  }
+  table.data-table td:last-child{ border-bottom:none; }
+  table.data-table td:empty{ display:none; }
+  table.data-table td::before{
+    content:attr(data-label); font-size:11px; font-weight:700; color:var(--text-600);
+    flex-shrink:0; text-align:right;
+  }
+  table.data-table td:not([data-label])::before{ content:none; }
+  table.data-table td input[type=number], table.data-table td input[type=text], table.data-table td select{ width:auto; max-width:150px; }
+  table.data-table tfoot tr{ background:none; border:none; padding:8px 0 0; }
+  table.data-table tfoot td{ border-bottom:none; }
+  .table-toolbar{ flex-wrap:wrap; }
+  .table-toolbar input[type=search], .table-toolbar select{ max-width:none !important; width:100%; }
+}

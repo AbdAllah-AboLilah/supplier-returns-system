@@ -206,8 +206,8 @@ function renderMappingStep(body, container, wiz) {
       <tbody>
         ${FIELD_DEFS.map(f => `
           <tr>
-            <td>${f.label}${f.required ? ' <span style="color:var(--red);">*</span>' : ''}</td>
-            <td>
+            <td data-label="الحقل المطلوب">${f.label}${f.required ? ' <span style="color:var(--red);">*</span>' : ''}</td>
+            <td data-label="العمود في الملف">
               <select data-field="${f.key}" style="max-width:280px;">
                 <option value="-1">— لا يوجد —</option>
                 ${colOptions}
@@ -309,12 +309,12 @@ function renderPreviewStep(body, container, wiz) {
     const tbody = qs('#preview-tbody', body);
     tbody.innerHTML = slice.map((r, i) => `
       <tr>
-        <td class="num text-dim">${(page - 1) * wiz.previewPageSize + i + 1}</td>
-        <td>${escapeHtml(r.name) || '<span class="text-dim">—</span>'}</td>
-        <td class="text-dim">${escapeHtml(r.barcode) || '—'}</td>
-        <td class="num">${fmtMoney(r.cost)}</td>
-        <td class="text-dim">${escapeHtml(r.category) || '—'}</td>
-        <td>${r.status === 'valid' ? '<span class="badge badge-erp-yes">✓ صالح</span>' : r.status === 'review' ? `<span class="badge badge-warn" title="${escapeHtml(r.reason)}">⚠️ ${escapeHtml(r.reason)}</span>` : `<span class="badge badge-erp-no" title="${escapeHtml(r.reason)}">❌ ${escapeHtml(r.reason)}</span>`}</td>
+        <td class="num text-dim" data-label="#">${(page - 1) * wiz.previewPageSize + i + 1}</td>
+        <td data-label="الصنف">${escapeHtml(r.name) || '<span class="text-dim">—</span>'}</td>
+        <td class="text-dim" data-label="الباركود">${escapeHtml(r.barcode) || '—'}</td>
+        <td class="num" data-label="التكلفة">${fmtMoney(r.cost)}</td>
+        <td class="text-dim" data-label="القسم">${escapeHtml(r.category) || '—'}</td>
+        <td data-label="الحالة">${r.status === 'valid' ? '<span class="badge badge-erp-yes">✓ صالح</span>' : r.status === 'review' ? `<span class="badge badge-warn" title="${escapeHtml(r.reason)}">⚠️ ${escapeHtml(r.reason)}</span>` : `<span class="badge badge-erp-no" title="${escapeHtml(r.reason)}">❌ ${escapeHtml(r.reason)}</span>`}</td>
       </tr>
     `).join('');
     const pagWrap = qs('#preview-pagination', body);

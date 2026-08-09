@@ -72,10 +72,10 @@ export async function renderItemsList(container) {
   if (tbody) {
     tbody.innerHTML = slice.map(i => `
       <tr class="row-link" data-id="${i.id}">
-        <td><b>${escapeHtml(i.name)}</b>${i.category ? `<div class="small text-dim">${escapeHtml(i.category)}</div>` : ''}</td>
-        <td class="num text-dim">${escapeHtml(i.barcode || '—')}</td>
-        <td class="num">${fmtMoney(i.baseCost)}</td>
-        <td class="num">
+        <td data-label="اسم الصنف"><b>${escapeHtml(i.name)}</b>${i.category ? `<div class="small text-dim">${escapeHtml(i.category)}</div>` : ''}</td>
+        <td class="num text-dim" data-label="الباركود">${escapeHtml(i.barcode || '—')}</td>
+        <td class="num" data-label="التكلفة الأساسية">${fmtMoney(i.baseCost)}</td>
+        <td class="num" data-label="عدد الموردين">
           ${linkCountByErp[i.id]
             ? `<button class="btn btn-sm btn-ghost btn-relations" data-id="${i.id}" data-name="${escapeHtml(i.name)}">${fmtInt(linkCountByErp[i.id])} مورد ↗</button>`
             : `<span class="text-dim">0</span>`}
@@ -127,9 +127,9 @@ async function openRelationsModal(erpItemId, itemName) {
         <tbody>
           ${relations.map(r => `
             <tr>
-              <td>${escapeHtml(r.supplierName)}</td>
-              <td><b>${escapeHtml(r.supplierItemName)}</b></td>
-              <td class="num">${fmtMoney(r.currentCost)}</td>
+              <td data-label="المورد">${escapeHtml(r.supplierName)}</td>
+              <td data-label="اسم الصنف عند المورد"><b>${escapeHtml(r.supplierItemName)}</b></td>
+              <td class="num" data-label="التكلفة">${fmtMoney(r.currentCost)}</td>
             </tr>
           `).join('')}
         </tbody>
