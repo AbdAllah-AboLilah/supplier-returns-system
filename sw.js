@@ -9,7 +9,7 @@
 // "auto-update" actually work); when offline you fall back to
 // whatever was last cached.
 // =========================================================
-const CACHE_NAME = 'returns-system-v1.4.1';
+const CACHE_NAME = 'returns-system-v1.6.0';
 const APP_SHELL = [
   './',
   './index.html',
@@ -24,6 +24,8 @@ const APP_SHELL = [
   './js/core/autosave.js',
   './js/core/brand.js',
   './js/core/sync-status.js',
+  './js/core/firebase-init.js',
+  './js/core/migrate-to-firebase.js',
   './js/modules/dashboard.js',
   './js/modules/suppliers.js',
   './js/modules/items.js',
@@ -65,9 +67,20 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Third-party (CDN) requests: network first, no forced caching.
+  // Third-party (CDN) requests: same network-first-with-cache-fallback
+  // strategy as same-origin. This matters more now than it used to —
+  // the Firebase SDK itself loads from this CDN, so without caching it
+  // here the app couldn't even boot offline after the very first visit.
   if (url.origin !== self.location.origin) {
-    event.respondWith(fetch(req).catch(() => caches.match(req)));
+    event.respondWith(
+      fetch(req).then(res => {
+        if (res && res.status === 200) {
+          const copy = res.clone();
+          caches.open(CACHE_NAME).then(cache => cache.put(req, copy));
+        }
+        return res;
+      }).catch(() => caches.match(req))
+    );
     return;
   }
 

@@ -38,7 +38,24 @@ python3 -m http.server 8080
 
 خيار "طباعة إيصال حراري" في تصدير تقرير المرتجعة بيفتح صفحة طباعة مُجهزة بعرض 80mm (مش ملف Excel — ملفات Excel مش مصممة للطباعة على لفة حرارية ضيقة، فالحل العملي هو تنسيق طباعة مباشر بيتعرف عليه أي طابعة حرارية متصلة كطابعة عادية في نظام التشغيل). لو الطابعة عندك 58mm بدل 80mm، غيّر `size: 80mm auto;` في `openThermalPrintView` بملف `js/modules/return-export.js`.
 
-## بنية المشروع
+## المزامنة السحابية (Firebase)
+
+النظام دلوقتي متصل بـ Firestore بدل التخزين المحلي فقط، فبيانات الموردين والمرتجعات والأصناف مشتركة بين أي جهاز يفتح نفس الرابط.
+
+### إعداد لازم قبل أول تشغيل
+1. **Firestore Database** لازم يكون متعمل من Firebase Console (Firestore Database → Create database).
+2. **Anonymous Authentication** لازم يكون مفعّل: Console → Authentication → Sign-in method → فعّل **Anonymous**. النظام بيسجّل دخول تلقائي بدون أي شاشة تسجيل تظهر للمستخدم — ده اللي بيسمح لقواعد الأمان إنها تمنع أي حد بره النظام من قراءة أو تعديل البيانات.
+3. **قواعد الأمان**: افتح ملف `firestore.rules` في هذا المشروع، انسخ محتواه، والصقه في Console → Firestore Database → Rules → Publish.
+
+### أول مرة بعد التحديث
+لو الجهاز ده كان عليه بيانات محلية قبل كده، النظام هيرفعها تلقائيًا لـ Firestore أول مرة يفتح فيها (مرة واحدة بس، ومش هيحصل تاني، ومش هيمسح حاجة). هتشوف رسالة تأكيد بعدد السجلات اللي اتنقلت. لو هتضيف جهاز تاني بعدين وعليه بيانات مختلفة، خد نسخة احتياطية منه الأول (من شاشة الإعدادات) قبل ما تفتح النظام عليه، عشان تقدر تدمج أي بيانات لو احتجت.
+
+### ملاحظات مهمة
+- **العمل بدون إنترنت**: شاشات العرض والتعديل بتشتغل أوفلاين عادي (Firestore بتحفظ نسخة محلية وتزامن تلقائي لما النت يرجع)، **ماعدا إنشاء مرتجعة جديدة برقم جديد** — ده محتاج اتصال إنترنت لحظة الإنشاء عشان رقم المرتجعة يتولّد بدون تعارض بين الأجهزة.
+- **استيراد Excel لكميات ضخمة** (آلاف الأصناف): هيبقى أبطأ شوية من قبل لأنه بيكتب كل سجل على السحابة، وممكن يستهلك حصة الاستخدام المجاني اليومي لو الاستيراد ضخم جدًا.
+- الأمان الحالي (Anonymous Auth) مناسب لجهاز/فريق موثوق بيه. لو حبيت لاحقًا تحدد مين بالظبط يقدر يدخل (يوزر وباسورد لكل شخص)، ده تطوير إضافي سهل نضيفه فوق نفس البنية.
+
+
 
 ```
 index.html
@@ -47,11 +64,12 @@ sw.js                   ← Service Worker (تخزين أوفلاين + كشف �
 version.json            ← يُقرأ في وقت التشغيل لاكتشاف نسخة أحدث
 css/styles.css
 js/
-  core/                 ← db.js (IndexedDB)، router.js، utils.js، audit.js، version.js، autosave.js
-  modules/              ← dashboard، suppliers، items، excel-import، supplier-items، returns، return-export، audit-log
+  core/                 ← db.js (Firestore)، firebase-init.js، migrate-to-firebase.js، router.js، utils.js، audit.js، version.js، autosave.js، brand.js، sync-status.js
+  modules/              ← dashboard، suppliers، items، excel-import، supplier-items، returns، return-export، audit-log، settings
 scripts/bump-version.js
 .github/workflows/bump-version-and-deploy.yml
+firestore.rules
 CHANGELOG.md
 ```
 
-الطبقة الوحيدة اللي بتتكلم مباشرة مع قاعدة البيانات هي `js/core/db.js` — ده اللي هيخلي ربط Firebase لاحقًا تعديل في ملف واحد بدل إعادة بناء الشاشات.
+الطبقة الوحيدة اللي بتتكلم مباشرة مع قاعدة البيانات هي `js/core/db.js` — وده اللي خلّى الانتقال من IndexedDB المحلي لـ Firebase يحصل بإعادة كتابة الملف ده بس، من غير ما نلمس أي شاشة تانية في النظام.

@@ -1,0 +1,17 @@
+rules_version = '2';
+
+// Requires an authenticated session (the app signs everyone in
+// anonymously on load — invisible, no login screen) before any
+// read or write. This isn't per-user data isolation — it's one
+// shared business dataset, so any signed-in session can read/write
+// all of it, same as the local IndexedDB version could before.
+//
+// To apply: Firebase Console → Firestore Database → Rules tab →
+// paste this whole file → Publish.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if request.auth != null;
+    }
+  }
+}

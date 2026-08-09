@@ -17,6 +17,7 @@ import { renderReturnsList, renderReturnDetail } from './modules/returns.js';
 import { renderAuditLogView } from './modules/audit-log.js';
 import { renderSettingsView } from './modules/settings.js';
 import { applyShopName } from './core/brand.js';
+import { migrateLocalDataToFirebaseIfNeeded } from './core/migrate-to-firebase.js';
 
 // ---------- Route table ----------
 
@@ -47,8 +48,26 @@ function onNavigate(meta) {
   window.scrollTo(0, 0);
 }
 
-initRouter(qs('#app-content'), onNavigate);
-applyShopName();
+// ---------- Boot: migrate any old local data, then start the router ----------
+// The dashboard's first render needs migration to have already run
+// (otherwise it would flash "no data" while migration is still
+// copying things up), so this gates the initial route on it —
+// hash navigation after that is unaffected and stays instant.
+
+qs('#app-content').innerHTML = '<div class="empty-state"><div class="empty-icon">⋯</div>جارِ الاتصال بقاعدة البيانات السحابية</div>';
+
+(async () => {
+  try {
+    const result = await migrateLocalDataToFirebaseIfNeeded();
+    if (result.migrated) toast(`تم نقل بياناتك المحلية إلى السحابة (${result.totalRows} سجل)`, 'success');
+  } catch (err) {
+    console.error('Migration check failed:', err);
+    // Not fatal — fall through and let the router attempt to load
+    // normally; individual screens will surface their own errors.
+  }
+  initRouter(qs('#app-content'), onNavigate);
+  applyShopName();
+})();
 
 // ---------- Mobile nav toggle ----------
 

@@ -27,7 +27,14 @@ export async function searchSupplierItems(supplierId, query, limit = 8) {
   const filtered = rows.filter(r => fuzzyIncludes(r.supplierItemName, query)).slice(0, limit);
   const erpItems = await getAll('erpItems');
   const erpById = Object.fromEntries(erpItems.map(i => [i.id, i]));
-  return filtered.map(r => ({ ...r, erpItemName: r.erpItemId ? (erpById[r.erpItemId]?.name || null) : null }));
+  return filtered.map(r => {
+    const erp = r.erpItemId ? erpById[r.erpItemId] : null;
+    return {
+      ...r,
+      erpItemName: erp ? erp.name : null,
+      erpBaseCost: erp ? Number(erp.baseCost) || 0 : null,
+    };
+  });
 }
 
 export async function getOrCreateSupplierItem(supplierId, name) {

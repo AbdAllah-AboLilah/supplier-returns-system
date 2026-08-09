@@ -1,167 +1,144 @@
 // =========================================================
 // core/db.js
-// IndexedDB data layer for the Supplier Returns system.
-//
-// This is the ONLY module that talks to IndexedDB directly.
-// Every other module goes through the functions exported here.
-// That boundary is what makes swapping/augmenting this with
-// Firebase later a matter of rewriting this one file's guts,
-// not touching the UI modules.
+// Cloud data layer (Firestore) — this is the ONLY module that
+// talks to Firestore directly. Every other module still calls
+// getAll/getById/put/... exactly as before; this file is the
+// single place that changed to move the app from local-only
+// IndexedDB to shared cloud storage. Offline support comes from
+// Firestore's own persistent local cache (see firebase-init.js),
+// which is why nothing else in the app needed to change.
 // =========================================================
+import { db, authReady } from './firebase-init.js';
+import { beginSyncOperation, endSyncOperation } from './sync-status.js';
+import {
+  collection, doc, getDoc, getDocs, setDoc, deleteDoc,
+  query, where, writeBatch, runTransaction,
+} from 'https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js';
 
-const DB_NAME = 'ReturnsSystemDB';
-const DB_VERSION = 1;
+// IndexedDB let every store declare its own keyPath; Firestore
+// documents just need a plain id string, so this is the one place
+// that has to know which field plays that role per collection.
+const KEY_FIELD = {
+  suppliers: 'id', erpItems: 'id', supplierItems: 'id', costHistory: 'id',
+  returns: 'id', returnItems: 'id', auditLog: 'id',
+  counters: 'name', settings: 'key',
+};
+const BATCH_SIZE = 400; // Firestore batches cap at 500 writes; stay comfortably under it.
 
-/** @type {IDBDatabase|null} */
-let _db = null;
-
-function openDb() {
-  if (_db) return Promise.resolve(_db);
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-
-    req.onupgradeneeded = (e) => {
-      const db = req.result;
-
-      if (!db.objectStoreNames.contains('suppliers')) {
-        const s = db.createObjectStore('suppliers', { keyPath: 'id' });
-        s.createIndex('name', 'name', { unique: false });
-      }
-
-      if (!db.objectStoreNames.contains('erpItems')) {
-        const s = db.createObjectStore('erpItems', { keyPath: 'id' });
-        s.createIndex('name', 'name', { unique: false });
-        s.createIndex('barcode', 'barcode', { unique: false });
-      }
-
-      if (!db.objectStoreNames.contains('supplierItems')) {
-        // The "mapping" entity: a supplier's own name for an item,
-        // linked (optionally) to an ERP item, with its own current cost.
-        const s = db.createObjectStore('supplierItems', { keyPath: 'id' });
-        s.createIndex('supplierId', 'supplierId', { unique: false });
-        s.createIndex('erpItemId', 'erpItemId', { unique: false });
-        s.createIndex('supplierItemName', 'supplierItemName', { unique: false });
-      }
-
-      if (!db.objectStoreNames.contains('costHistory')) {
-        const s = db.createObjectStore('costHistory', { keyPath: 'id' });
-        s.createIndex('supplierItemId', 'supplierItemId', { unique: false });
-      }
-
-      if (!db.objectStoreNames.contains('returns')) {
-        const s = db.createObjectStore('returns', { keyPath: 'id' });
-        s.createIndex('supplierId', 'supplierId', { unique: false });
-        s.createIndex('status', 'status', { unique: false });
-        s.createIndex('returnNumber', 'returnNumber', { unique: true });
-      }
-
-      if (!db.objectStoreNames.contains('returnItems')) {
-        const s = db.createObjectStore('returnItems', { keyPath: 'id' });
-        s.createIndex('returnId', 'returnId', { unique: false });
-      }
-
-      if (!db.objectStoreNames.contains('auditLog')) {
-        const s = db.createObjectStore('auditLog', { keyPath: 'id' });
-        s.createIndex('timestamp', 'timestamp', { unique: false });
-      }
-
-      if (!db.objectStoreNames.contains('counters')) {
-        db.createObjectStore('counters', { keyPath: 'name' });
-      }
-
-      if (!db.objectStoreNames.contains('settings')) {
-        db.createObjectStore('settings', { keyPath: 'key' });
-      }
-    };
-
-    req.onsuccess = () => { _db = req.result; resolve(_db); };
-    req.onerror = () => reject(req.error);
-  });
+async function ready() {
+  try {
+    await authReady;
+  } catch (err) {
+    throw new Error('تعذّر الاتصال بقاعدة البيانات السحابية — تحقق من الإنترنت وحاول تاني.');
+  }
+  return db;
 }
 
-// ---------- Generic promise-wrapped store operations ----------
-
-function tx(storeNames, mode) {
-  return openDb().then(db => db.transaction(storeNames, mode));
+async function withSync(fn) {
+  beginSyncOperation();
+  try { return await fn(); }
+  finally { endSyncOperation(); }
 }
 
-export function getAll(storeName) {
-  return tx(storeName, 'readonly').then(t => new Promise((resolve, reject) => {
-    const req = t.objectStore(storeName).getAll();
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  }));
+// ---------- Generic collection operations ----------
+
+export async function getAll(storeName) {
+  await ready();
+  const snap = await getDocs(collection(db, storeName));
+  return snap.docs.map(d => d.data());
 }
 
-export function getByIndex(storeName, indexName, value) {
-  return tx(storeName, 'readonly').then(t => new Promise((resolve, reject) => {
-    const req = t.objectStore(storeName).index(indexName).getAll(value);
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  }));
+export async function getByIndex(storeName, indexName, value) {
+  await ready();
+  const q = query(collection(db, storeName), where(indexName, '==', value));
+  const snap = await getDocs(q);
+  return snap.docs.map(d => d.data());
 }
 
-export function getById(storeName, id) {
-  return tx(storeName, 'readonly').then(t => new Promise((resolve, reject) => {
-    const req = t.objectStore(storeName).get(id);
-    req.onsuccess = () => resolve(req.result || null);
-    req.onerror = () => reject(req.error);
-  }));
+export async function getById(storeName, id) {
+  await ready();
+  if (id === undefined || id === null || id === '') return null;
+  const snap = await getDoc(doc(db, storeName, String(id)));
+  return snap.exists() ? snap.data() : null;
 }
 
 export function put(storeName, value) {
-  return tx(storeName, 'readwrite').then(t => new Promise((resolve, reject) => {
-    const req = t.objectStore(storeName).put(value);
-    req.onsuccess = () => resolve(value);
-    req.onerror = () => reject(req.error);
-  }));
+  return withSync(async () => {
+    await ready();
+    const key = value[KEY_FIELD[storeName] || 'id'];
+    await setDoc(doc(db, storeName, String(key)), value);
+    return value;
+  });
 }
 
 export function bulkPut(storeName, values) {
-  return tx(storeName, 'readwrite').then(t => new Promise((resolve, reject) => {
-    const store = t.objectStore(storeName);
-    values.forEach(v => store.put(v));
-    t.oncomplete = () => resolve(values);
-    t.onerror = () => reject(t.error);
-  }));
+  return withSync(async () => {
+    await ready();
+    const keyField = KEY_FIELD[storeName] || 'id';
+    for (let i = 0; i < values.length; i += BATCH_SIZE) {
+      const chunk = values.slice(i, i + BATCH_SIZE);
+      const batch = writeBatch(db);
+      chunk.forEach(v => batch.set(doc(db, storeName, String(v[keyField])), v));
+      await batch.commit();
+    }
+    return values;
+  });
 }
 
 export function remove(storeName, id) {
-  return tx(storeName, 'readwrite').then(t => new Promise((resolve, reject) => {
-    const req = t.objectStore(storeName).delete(id);
-    req.onsuccess = () => resolve(true);
-    req.onerror = () => reject(req.error);
-  }));
+  return withSync(async () => {
+    await ready();
+    await deleteDoc(doc(db, storeName, String(id)));
+    return true;
+  });
 }
 
 export function removeWhere(storeName, indexName, value) {
-  return tx(storeName, 'readwrite').then(t => new Promise((resolve, reject) => {
-    const store = t.objectStore(storeName);
-    const idx = store.index(indexName);
-    const req = idx.openCursor(IDBKeyRange.only(value));
-    req.onsuccess = () => {
-      const cur = req.result;
-      if (cur) { store.delete(cur.primaryKey); cur.continue(); }
-    };
-    t.oncomplete = () => resolve(true);
-    t.onerror = () => reject(t.error);
-  }));
+  return withSync(async () => {
+    await ready();
+    const q = query(collection(db, storeName), where(indexName, '==', value));
+    const snap = await getDocs(q);
+    for (let i = 0; i < snap.docs.length; i += BATCH_SIZE) {
+      const batch = writeBatch(db);
+      snap.docs.slice(i, i + BATCH_SIZE).forEach(d => batch.delete(d.ref));
+      await batch.commit();
+    }
+    return true;
+  });
+}
+
+export function clearStore(storeName) {
+  return withSync(async () => {
+    await ready();
+    const snap = await getDocs(collection(db, storeName));
+    for (let i = 0; i < snap.docs.length; i += BATCH_SIZE) {
+      const batch = writeBatch(db);
+      snap.docs.slice(i, i + BATCH_SIZE).forEach(d => batch.delete(d.ref));
+      await batch.commit();
+    }
+    return true;
+  });
 }
 
 // ---------- Sequential document numbers (e.g. RET-2026-00001) ----------
+// Uses a Firestore transaction so two devices creating a return at
+// the same moment can never collide on the same number. Note: unlike
+// everything else in this file, a transaction needs a live network
+// round-trip — generating a *new* return number will fail while
+// fully offline (existing returns still open/edit/print fine offline).
 
 export function nextSequence(counterName) {
-  return tx('counters', 'readwrite').then(t => new Promise((resolve, reject) => {
-    const store = t.objectStore('counters');
-    const req = store.get(counterName);
-    req.onsuccess = () => {
-      const current = req.result ? req.result.value : 0;
+  return withSync(async () => {
+    await ready();
+    return runTransaction(db, async (tx) => {
+      const ref = doc(db, 'counters', counterName);
+      const snap = await tx.get(ref);
+      const current = snap.exists() ? snap.data().value : 0;
       const next = current + 1;
-      store.put({ name: counterName, value: next });
-      resolve(next);
-    };
-    req.onerror = () => reject(req.error);
-  }));
+      tx.set(ref, { name: counterName, value: next });
+      return next;
+    });
+  });
 }
 
 export async function generateReturnNumber() {
@@ -181,17 +158,9 @@ export function setSetting(key, value) {
   return put('settings', { key, value });
 }
 
-// ---------- Full backup / restore (all stores, one JSON file) ----------
+// ---------- Full backup / restore (all collections, one JSON file) ----------
 
 export const ALL_STORES = ['suppliers', 'erpItems', 'supplierItems', 'costHistory', 'returns', 'returnItems', 'auditLog', 'counters', 'settings'];
-
-export function clearStore(storeName) {
-  return tx(storeName, 'readwrite').then(t => new Promise((resolve, reject) => {
-    const req = t.objectStore(storeName).clear();
-    req.onsuccess = () => resolve(true);
-    req.onerror = () => reject(req.error);
-  }));
-}
 
 export async function exportAllData() {
   const data = {};

@@ -489,6 +489,10 @@ textarea{ resize:vertical; min-height:70px; }
 .autosave-status:empty{ opacity:0; }
 .field-label-row{ display:flex; align-items:center; }
 
+/* Fallback cost (system default, not a confirmed supplier price) */
+.cost-fallback{ border-color:var(--red) !important; color:var(--red); background:var(--red-tint); font-weight:700; }
+.cost-fallback-text{ color:var(--red); font-weight:700; }
+
 /* Export options */
 .export-col-toggle{ display:flex; align-items:center; gap:8px; padding:7px 0; font-size:13px; }
 .export-actions{ display:flex; gap:8px; flex-wrap:wrap; margin-top:16px; }

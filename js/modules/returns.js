@@ -99,20 +99,29 @@ export async function createDraftReturn(supplierId) {
 
 async function touchReturn(ret) { ret.updatedAt = nowIso(); await put('returns', ret); }
 
-export async function addItemLine(returnId, supplierId, supplierItemName, qty, costOverride) {
+export async function addItemLine(returnId, supplierId, supplierItemName, qty, costOverride, costIsFallback = false) {
   const si = await getOrCreateSupplierItem(supplierId, supplierItemName);
   const quantity = Number(qty) || 1;
 
   let unitCost = Number(si.currentCost) || 0;
+  let isFallback = false;
   if (costOverride !== undefined && costOverride !== '' && costOverride !== null) {
     const newCost = Number(costOverride);
     if (!isNaN(newCost)) {
       unitCost = newCost;
-      // A cost typed while adding to a return is, in practice, the
-      // freshest known price for this supplier item — record it as
-      // the current cost (with history) so it's the default suggestion
-      // next time, anywhere in the system. Past returns are untouched.
-      if (newCost !== Number(si.currentCost)) await updateSupplierItemCost(si.id, newCost);
+      if (costIsFallback) {
+        // This number came from the ERP item's base cost as a stand-in
+        // because the supplier never had a cost set — it is NOT a
+        // confirmed supplier price, so don't record it as one. The line
+        // still uses it (better than showing 0), just flagged red.
+        isFallback = true;
+      } else if (newCost !== Number(si.currentCost)) {
+        // A cost typed/confirmed while adding to a return is, in practice,
+        // the freshest known price for this supplier item — record it as
+        // the current cost (with history) so it's the default suggestion
+        // next time, anywhere in the system. Past returns are untouched.
+        await updateSupplierItemCost(si.id, newCost);
+      }
     }
   }
 
@@ -124,6 +133,7 @@ export async function addItemLine(returnId, supplierId, supplierItemName, qty, c
   const line = {
     id: uid(), returnId, supplierItemId: si.id, supplierItemName: si.supplierItemName,
     erpItemId: si.erpItemId || null, erpItemName, qty: quantity, unitCost, total: quantity * unitCost,
+    costIsFallback: isFallback,
     createdAt: nowIso(),
   };
   await put('returnItems', line);
@@ -139,6 +149,7 @@ export async function updateLine(lineId, { qty, unitCost }) {
   if (unitCost !== undefined) {
     const newCost = Number(unitCost) || 0;
     line.unitCost = newCost;
+    line.costIsFallback = false; // editing it directly is an explicit confirmation
     // Same rule as above: editing the cost on a line is treated as
     // updating the known cost for that supplier item going forward,
     // without rewriting any other return that already used the old cost.
@@ -400,13 +411,16 @@ export async function renderReturnDetail(container, returnId) {
               <td><b>${escapeHtml(l.supplierItemName)}</b></td>
               <td>${l.erpItemName ? escapeHtml(l.erpItemName) : `<span class="badge badge-warn">⚠️ غير مرتبط</span>`}</td>
               <td class="num">${editable ? `<input type="number" min="0" step="1" class="line-qty" data-id="${l.id}" value="${l.qty}" style="width:80px;text-align:center;">` : fmtInt(l.qty)}</td>
-              <td class="num">${editable ? `<input type="number" min="0" step="0.01" class="line-cost" data-id="${l.id}" value="${l.unitCost}" style="width:100px;text-align:center;">` : fmtMoney(l.unitCost)}</td>
+              <td class="num">${editable
+                ? `<input type="number" min="0" step="0.01" class="line-cost ${l.costIsFallback ? 'cost-fallback' : ''}" data-id="${l.id}" value="${l.unitCost}" title="${l.costIsFallback ? 'تكلفة النظام الافتراضية — لسه محدّدتش تكلفة هذا المورد الفعلية' : ''}" style="width:100px;text-align:center;">`
+                : `<span class="${l.costIsFallback ? 'cost-fallback-text' : ''}" title="${l.costIsFallback ? 'تكلفة النظام الافتراضية — لسه محدّدتش تكلفة هذا المورد الفعلية' : ''}">${fmtMoney(l.unitCost)}</span>`}</td>
               <td class="num text-mono" id="line-total-${l.id}">${fmtMoney(l.total)}</td>
               ${editable ? `<td><button class="btn btn-sm btn-ghost line-remove" data-id="${l.id}">حذف</button></td>` : ''}
             </tr>
           `).join('')}
         </tbody>
         <tfoot>
+          ${lines.some(l => l.costIsFallback) ? `<tr><td colspan="${editable ? 6 : 5}" style="padding-top:6px;"><span class="small" style="color:var(--red);">🔴 التكلفة باللون الأحمر هي تكلفة النظام الافتراضية — راجعها وأكّدها أو عدّلها لو مختلفة عن تكلفة المورد الفعلية.</span></td></tr>` : ''}
           <tr>
             <td colspan="2"><b>الإجمالي</b></td>
             <td class="num text-mono" id="footer-total-qty">${fmtInt(totalQty)}</td>
@@ -519,6 +533,8 @@ function wireDetailEvents(container, ret, lines, supplier) {
   }, { delay: 500 }));
   qsa('.line-cost', container).forEach(inp => autosaveField(inp, async (val) => {
     await updateLine(inp.dataset.id, { unitCost: val });
+    inp.classList.remove('cost-fallback');
+    inp.title = '';
     recalcRowAndTotals(container, inp.dataset.id);
   }, { delay: 500 }));
   qsa('.line-remove', container).forEach(b => b.addEventListener('click', async () => {
@@ -535,19 +551,33 @@ function wireDetailEvents(container, ret, lines, supplier) {
       if (!q) { resultsBox.style.display = 'none'; return; }
       const matches = await searchSupplierItems(ret.supplierId, q, 8);
       const exact = matches.some(m => m.supplierItemName.trim().toLowerCase() === q.toLowerCase());
-      let html = matches.map(m => `
-        <div class="autocomplete-item" data-name="${escapeHtml(m.supplierItemName)}" data-cost="${m.currentCost || 0}">
+      let html = matches.map(m => {
+        const hasSupplierCost = Number(m.currentCost) > 0;
+        const fallbackCost = (!hasSupplierCost && m.erpBaseCost > 0) ? m.erpBaseCost : null;
+        const effectiveCost = hasSupplierCost ? m.currentCost : (fallbackCost || 0);
+        const costLabel = hasSupplierCost
+          ? `· ${fmtMoney(m.currentCost)} ج`
+          : (fallbackCost ? `· <span style="color:var(--red);">${fmtMoney(fallbackCost)} ج (تكلفة النظام، مش مؤكدة)</span>` : '');
+        return `
+        <div class="autocomplete-item" data-name="${escapeHtml(m.supplierItemName)}" data-cost="${effectiveCost}" data-fallback="${fallbackCost !== null ? '1' : '0'}">
           <b>${escapeHtml(m.supplierItemName)}</b>
-          <div class="ac-sub">${m.erpItemName ? escapeHtml(m.erpItemName) : '⚠️ غير مرتبط بعد'} ${m.currentCost ? `· ${fmtMoney(m.currentCost)} ج` : ''}</div>
+          <div class="ac-sub">${m.erpItemName ? escapeHtml(m.erpItemName) : '⚠️ غير مرتبط بعد'} ${costLabel}</div>
         </div>
-      `).join('');
-      if (!exact) html += `<div class="autocomplete-item" data-name="${escapeHtml(q)}" data-cost="" style="color:var(--gold-dark);">+ إضافة "${escapeHtml(q)}" كصنف جديد لهذا المورد</div>`;
+      `;
+      }).join('');
+      if (!exact) html += `<div class="autocomplete-item" data-name="${escapeHtml(q)}" data-cost="" data-fallback="0" style="color:var(--gold-dark);">+ إضافة "${escapeHtml(q)}" كصنف جديد لهذا المورد</div>`;
       resultsBox.innerHTML = html || `<div class="autocomplete-empty">لا توجد نتائج</div>`;
       resultsBox.style.display = 'block';
       resultsBox.querySelectorAll('.autocomplete-item').forEach(it => {
         it.addEventListener('click', () => {
           nameInput.value = it.dataset.name;
-          if (costInput && it.dataset.cost) costInput.value = it.dataset.cost;
+          if (costInput && it.dataset.cost) {
+            costInput.value = it.dataset.cost;
+            const isFallback = it.dataset.fallback === '1';
+            costInput.dataset.fallback = isFallback ? '1' : '0';
+            costInput.classList.toggle('cost-fallback', isFallback);
+            costInput.title = isFallback ? 'تكلفة النظام الافتراضية — لسه محدّدتش تكلفة هذا المورد الفعلية' : '';
+          }
           resultsBox.style.display = 'none';
           costInput?.focus();
         });
@@ -556,12 +586,23 @@ function wireDetailEvents(container, ret, lines, supplier) {
     document.addEventListener('click', (e) => { if (!e.target.closest('.autocomplete')) resultsBox.style.display = 'none'; }, { once: true });
   }
 
+  // Typing into the cost field yourself counts as taking ownership of
+  // the value, whatever it ends up being — clear the "unconfirmed
+  // system cost" flag the moment they touch it.
+  costInput?.addEventListener('input', () => {
+    costInput.dataset.fallback = '0';
+    costInput.classList.remove('cost-fallback');
+    costInput.title = '';
+  });
+
   qs('#btn-add-item', container)?.addEventListener('click', async () => {
     const name = qs('#add-item-name', container).value.trim();
     const qty = qs('#add-item-qty', container).value;
-    const cost = qs('#add-item-cost', container)?.value;
+    const costEl = qs('#add-item-cost', container);
+    const cost = costEl?.value;
+    const costIsFallback = costEl?.dataset.fallback === '1';
     if (!name) { toast('اكتب اسم الصنف أولًا', 'error'); return; }
-    await addItemLine(ret.id, ret.supplierId, name, qty, cost);
+    await addItemLine(ret.id, ret.supplierId, name, qty, cost, costIsFallback);
     await renderReturnDetail(container, ret.id);
     qs('#add-item-name', container)?.focus();
   });

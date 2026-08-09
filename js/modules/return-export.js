@@ -191,9 +191,18 @@ export async function openThermalPrintView(ret, supplier, lines, keys) {
   // are bold throughout — thin/regular strokes print faint on most
   // thermal heads. If your paper is 58mm instead of 80mm, change the
   // "size" line below to "58mm auto".
-  const rowsHtml = lines.map(l => `
+  const rowsHtml = lines.map(l => {
+    const showSupplierName = keys.includes('supplierName');
+    const showErpName = keys.includes('erpName');
+    // Always show *something* as the title — supplier name by default,
+    // falling back to the ERP name if supplier name was unchecked.
+    const title = showSupplierName ? l.supplierItemName : (showErpName ? (l.erpItemName || 'غير مرتبط') : l.supplierItemName);
+    // If both are checked, the ERP name becomes a small line under the title.
+    const subtitle = (showSupplierName && showErpName) ? (l.erpItemName || 'غير مرتبط') : null;
+    return `
     <div class="tp-item">
-      <div class="tp-item-name">${escapeHtml(l.supplierItemName)}</div>
+      <div class="tp-item-name">${escapeHtml(title)}</div>
+      ${subtitle ? `<div class="tp-item-sub">${escapeHtml(subtitle)}</div>` : ''}
       ${(keys.includes('qty') || keys.includes('cost') || keys.includes('total')) ? `
       <table class="tp-row"><tr>
         ${keys.includes('qty') ? `<td>الكمية: ${fmtInt(l.qty)}</td>` : ''}
@@ -201,7 +210,8 @@ export async function openThermalPrintView(ret, supplier, lines, keys) {
         ${keys.includes('total') ? `<td>الإجمالي: ${fmtMoney(l.total)}</td>` : ''}
       </tr></table>` : ''}
     </div>
-  `).join('');
+  `;
+  }).join('');
 
   win.document.write(`
     <!DOCTYPE html>
@@ -214,29 +224,41 @@ export async function openThermalPrintView(ret, supplier, lines, keys) {
       body {
         font-family: 'Tahoma', 'Arial', sans-serif;
         width: 100%;
-        padding: 3mm 3mm;
+        padding: 2mm 3mm;
         color: #000;
         font-size: 12px;
-        line-height: 1.3;
+        line-height: 1.15;
       }
       .tp-center { text-align: center; }
-      .tp-shop { font-size: 13px; font-weight: bold; margin-bottom: 1px; }
-      .tp-title { font-size: 15px; font-weight: bold; margin-bottom: 1px; }
+      .tp-letterhead { width: 100%; border-collapse: collapse; table-layout: fixed; margin-bottom: 2px; }
+      .tp-letterhead td { vertical-align: top; font-size: 10px; font-weight: 700; }
+      .tp-letterhead td:first-child { text-align: right; }
+      .tp-letterhead td:last-child { text-align: left; }
+      .tp-shop { font-size: 13px; font-weight: bold; }
+      .tp-tagline { font-size: 9px; font-weight: 600; }
+      .tp-title { font-size: 15px; font-weight: bold; margin-bottom: 0; }
       .tp-sub { font-size: 11px; font-weight: 600; color:#000; }
-      .tp-divider { border-top: 1px dashed #000; margin: 5px 0; }
-      .tp-item { padding: 3px 0; border-bottom: 1px dotted #999; }
+      .tp-divider { border-top: 1px dashed #000; margin: 3px 0; }
+      .tp-item { padding: 2px 0; border-bottom: 1px dotted #999; }
       .tp-item-name { font-weight: bold; word-break: break-word; overflow-wrap: break-word; }
+      .tp-item-sub { font-size: 10px; font-weight: 600; color: #333; margin-top: 1px; }
       .tp-row { width: 100%; border-collapse: collapse; table-layout: fixed; margin-top: 1px; }
       .tp-row td { font-size: 12px; font-weight: 700; padding: 0 1px; text-align: center; }
-      .tp-grand-row { width: 100%; border-collapse: collapse; table-layout: fixed; margin-top: 8px; padding-top: 6px; border-top: 1px solid #000; }
+      .tp-grand-row { width: 100%; border-collapse: collapse; table-layout: fixed; margin-top: 5px; padding-top: 4px; border-top: 1px solid #000; }
       .tp-grand-row td { font-size: 14px; font-weight: 900; text-align: center; padding: 0; }
-      .tp-footer { text-align: center; font-size: 10px; font-weight: 600; color: #000; margin-top: 10px; }
-      .tp-print-btn { display: block; width: 100%; margin-top: 16px; padding: 10px; font-size: 13px; }
+      .tp-print-btn { display: block; width: 100%; margin-top: 14px; padding: 10px; font-size: 13px; }
       @media print { .tp-print-btn { display: none; } }
     </style></head>
     <body>
+      <table class="tp-letterhead"><tr>
+        <td>
+          ${shopName ? `<div class="tp-shop">${escapeHtml(shopName)}</div>` : ''}
+          <div class="tp-tagline">نظام إدارة المخزون والمرتجعات</div>
+        </td>
+        <td>عبدالله &lt;Abo-Lilah&gt;</td>
+      </tr></table>
+      <div class="tp-divider"></div>
       <div class="tp-center">
-        ${shopName ? `<div class="tp-shop">${escapeHtml(shopName)}</div>` : ''}
         <div class="tp-title">مرتجعة موردين</div>
         <div class="tp-sub">${escapeHtml(supplier?.name || '—')}</div>
         <div class="tp-sub">${escapeHtml(ret.returnNumber)} · ${fmtDate(ret.createdAt, true)}</div>
@@ -248,7 +270,6 @@ export async function openThermalPrintView(ret, supplier, lines, keys) {
         ${keys.includes('qty') ? `<td>الكمية: ${fmtInt(totalQty)}</td>` : ''}
         ${keys.includes('total') ? `<td>الإجمالي: ${fmtMoney(total)}</td>` : ''}
       </tr></table>` : ''}
-      <div class="tp-footer">${escapeHtml(shopName || 'نظام إدارة مرتجعات الموردين')}</div>
       <button class="tp-print-btn" onclick="window.print()">🖨 طباعة</button>
     </body></html>
   `);
