@@ -197,6 +197,12 @@ select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible{
   display:none;
   border:none; background:none; font-size:18px; cursor:pointer; color:var(--text-600);
 }
+#btn-back{
+  border:none; background:none; font-size:16px; cursor:pointer; color:var(--text-600);
+  width:30px; height:30px; border-radius:var(--radius-s); flex-shrink:0;
+  display:flex; align-items:center; justify-content:center;
+}
+#btn-back:hover{ background:#EFF1F4; color:var(--ink-900); }
 #topbar-title{ font-weight:700; font-size:16px; }
 #topbar-actions{ margin-inline-start:auto; display:flex; gap:8px; }
 
@@ -319,6 +325,17 @@ table.data-table tr.row-link{ cursor:pointer; }
 
 .table-toolbar{ display:flex; align-items:center; gap:10px; padding:14px 16px; flex-wrap:wrap; border-bottom:1px solid var(--line); background:var(--paper-raised); border-radius:var(--radius-m) var(--radius-m) 0 0; }
 .table-toolbar .spacer{ flex:1; }
+
+/* Shared filter row: sits right under the toolbar, same look on every
+   screen that has one, with a "clear filters" action that only shows
+   once something is actually active. */
+.filter-bar{
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  padding:10px 16px; border-bottom:1px solid var(--line); background:#FAFBFC;
+}
+.filter-bar label{ font-size:11.5px; font-weight:700; color:var(--text-600); }
+.filter-bar select, .filter-bar input[type=date]{ font-size:12.5px; padding:6px 10px; }
+.filter-bar .filter-clear{ margin-inline-start:auto; }
 
 .empty-state{ text-align:center; padding:48px 20px; color:var(--text-600); }
 .empty-state .empty-icon{ font-size:30px; margin-bottom:10px; opacity:.5; }

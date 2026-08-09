@@ -237,11 +237,26 @@ async function openHistoryModal(supplierItemId) {
 
 // ---------- UI: standalone "unlinked items" route ----------
 
+const unlinkedState = { supplierFilter: '' };
+
 export async function renderUnlinkedView(container) {
-  const rows = await listUnlinked();
+  const all = await listUnlinked();
+  const suppliers = [...new Map(all.map(r => [r.supplierId, r.supplierName])).entries()]
+    .sort((a, b) => a[1].localeCompare(b[1], 'ar'));
+  const rows = unlinkedState.supplierFilter ? all.filter(r => r.supplierId === unlinkedState.supplierFilter) : all;
+
   container.innerHTML = `
     <div class="card">
       <div class="card-header"><h3>أصناف الموردين غير المرتبطة بنظام ERP</h3><span class="badge badge-warn">${rows.length}</span></div>
+      ${suppliers.length ? `
+      <div class="filter-bar">
+        <label>المورد</label>
+        <select id="unlinked-supplier-filter">
+          <option value="">كل الموردين</option>
+          ${suppliers.map(([id, name]) => `<option value="${id}" ${unlinkedState.supplierFilter === id ? 'selected' : ''}>${escapeHtml(name)}</option>`).join('')}
+        </select>
+        ${unlinkedState.supplierFilter ? `<button class="btn btn-sm btn-ghost filter-clear" id="btn-clear-filters">✕ مسح الفلتر</button>` : ''}
+      </div>` : ''}
       ${rows.length ? `
       <table class="data-table">
         <thead><tr><th>المورد</th><th>اسم الصنف عند المورد</th><th class="num">التكلفة</th><th></th></tr></thead>
@@ -258,10 +273,12 @@ export async function renderUnlinkedView(container) {
       </table>` : `
       <div class="empty-state">
         <div class="empty-icon">✅</div>
-        <div class="empty-title">كل أصناف الموردين مرتبطة</div>
+        <div class="empty-title">${unlinkedState.supplierFilter ? 'لا توجد أصناف غير مرتبطة لهذا المورد' : 'كل أصناف الموردين مرتبطة'}</div>
         <div class="empty-hint">لا توجد أصناف تحتاج مراجعة حاليًا</div>
       </div>`}
     </div>
   `;
   container.querySelectorAll('.btn-link').forEach(b => b.addEventListener('click', () => openLinkModal(b.dataset.id, () => renderUnlinkedView(container))));
+  qs('#unlinked-supplier-filter', container)?.addEventListener('change', (e) => { unlinkedState.supplierFilter = e.target.value; renderUnlinkedView(container); });
+  qs('#btn-clear-filters', container)?.addEventListener('click', () => { unlinkedState.supplierFilter = ''; renderUnlinkedView(container); });
 }

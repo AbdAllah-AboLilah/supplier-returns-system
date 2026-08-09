@@ -240,7 +240,7 @@ export async function deleteReturn(returnId) {
 
 // ---------- UI: list views ----------
 
-const listState = { page: 1, pageSize: 50, query: '', supplierFilter: '' };
+const listState = { page: 1, pageSize: 50, query: '', supplierFilter: '', dateFrom: '', dateTo: '' };
 
 const FILTER_LABELS = {
   active: 'المرتجعات النشطة',
@@ -277,19 +277,31 @@ export async function renderReturnsList(container, filterKey, presetSupplierId =
   if (presetSupplierId) rows = rows.filter(r => r.supplierId === presetSupplierId);
   if (listState.supplierFilter && !presetSupplierId) rows = rows.filter(r => r.supplierId === listState.supplierFilter);
   if (listState.query) rows = rows.filter(r => fuzzyIncludes(r.returnNumber, listState.query) || fuzzyIncludes(r.supplierName, listState.query));
+  if (listState.dateFrom) rows = rows.filter(r => r.createdAt >= listState.dateFrom);
+  if (listState.dateTo) rows = rows.filter(r => r.createdAt <= listState.dateTo + 'T23:59:59');
   rows = rows.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+
+  const hasActiveFilters = !!(listState.dateFrom || listState.dateTo || (listState.supplierFilter && !presetSupplierId));
 
   container.innerHTML = `
     <div class="card">
       <div class="table-toolbar">
         <input type="search" id="ret-search" placeholder="🔎 رقم المرتجعة أو المورد" style="max-width:240px;" value="${escapeHtml(listState.query)}">
+        <div class="spacer"></div>
+        <button class="btn btn-primary" id="btn-new-return">+ مرتجعة جديدة</button>
+      </div>
+      <div class="filter-bar">
         ${!presetSupplierId ? `
-        <select id="ret-supplier-filter" style="max-width:200px;">
+        <label>المورد</label>
+        <select id="ret-supplier-filter">
           <option value="">كل الموردين</option>
           ${suppliers.map(s => `<option value="${s.id}" ${listState.supplierFilter === s.id ? 'selected' : ''}>${escapeHtml(s.name)}</option>`).join('')}
         </select>` : ''}
-        <div class="spacer"></div>
-        <button class="btn btn-primary" id="btn-new-return">+ مرتجعة جديدة</button>
+        <label>من</label>
+        <input type="date" id="ret-date-from" value="${listState.dateFrom}">
+        <label>إلى</label>
+        <input type="date" id="ret-date-to" value="${listState.dateTo}">
+        ${hasActiveFilters ? `<button class="btn btn-sm btn-ghost filter-clear" id="btn-clear-filters">✕ مسح الفلاتر</button>` : ''}
       </div>
       ${rows.length ? `
       <table class="data-table">
@@ -313,7 +325,7 @@ export async function renderReturnsList(container, filterKey, presetSupplierId =
       <div class="empty-state">
         <div class="empty-icon">↩︎</div>
         <div class="empty-title">لا توجد مرتجعات في ${escapeHtml(FILTER_LABELS[filterKey] || '')}</div>
-        <div class="empty-hint">أنشئ مرتجعة جديدة للبدء</div>
+        <div class="empty-hint">${hasActiveFilters ? 'جرّب توسيع نطاق الفلاتر' : 'أنشئ مرتجعة جديدة للبدء'}</div>
       </div>`}
     </div>
   `;
@@ -322,6 +334,12 @@ export async function renderReturnsList(container, filterKey, presetSupplierId =
   qs('#ret-search', container).addEventListener('input', debounce((e) => { listState.query = e.target.value; renderReturnsList(container, filterKey, presetSupplierId); }, 200));
   const sf = qs('#ret-supplier-filter', container);
   if (sf) sf.addEventListener('change', () => { listState.supplierFilter = sf.value; renderReturnsList(container, filterKey, presetSupplierId); });
+  qs('#ret-date-from', container).addEventListener('change', (e) => { listState.dateFrom = e.target.value; renderReturnsList(container, filterKey, presetSupplierId); });
+  qs('#ret-date-to', container).addEventListener('change', (e) => { listState.dateTo = e.target.value; renderReturnsList(container, filterKey, presetSupplierId); });
+  qs('#btn-clear-filters', container)?.addEventListener('click', () => {
+    listState.supplierFilter = ''; listState.dateFrom = ''; listState.dateTo = '';
+    renderReturnsList(container, filterKey, presetSupplierId);
+  });
   qs('#btn-new-return', container).addEventListener('click', () => openNewReturnModal(presetSupplierId));
 }
 

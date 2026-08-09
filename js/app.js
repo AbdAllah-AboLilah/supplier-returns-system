@@ -3,7 +3,7 @@
 // This file only wires things together; all real logic lives
 // in js/core and js/modules.
 // =========================================================
-import { registerRoute, initRouter } from './core/router.js';
+import { registerRoute, initRouter, navigate } from './core/router.js';
 import { qs, qsa, toast } from './core/utils.js';
 import { APP_VERSION } from './core/version.js';
 import { getSyncStatus, onSyncStatusChange } from './core/sync-status.js';
@@ -45,6 +45,7 @@ function onNavigate(meta) {
   qsa('.nav-link').forEach(a => a.classList.toggle('active', a.dataset.nav === meta.navKey));
   qs('#topbar-title').textContent = meta.title || '';
   qs('#app-shell').classList.remove('nav-open');
+  qs('#btn-back').style.display = meta.navKey === 'dashboard' ? 'none' : 'flex';
   window.scrollTo(0, 0);
 }
 
@@ -72,6 +73,16 @@ qs('#app-content').innerHTML = '<div class="empty-state"><div class="empty-icon"
 // ---------- Mobile nav toggle ----------
 
 qs('#menu-toggle').addEventListener('click', () => qs('#app-shell').classList.toggle('nav-open'));
+
+qs('#btn-back').addEventListener('click', () => {
+  // Hash navigation already pushes a browser history entry on every
+  // route change (see core/router.js navigate()), so native back/forward
+  // just works — no separate in-app history stack needed. Falling back
+  // to the dashboard covers the rare case of landing here with no
+  // history at all (e.g. a shared/bookmarked deep link).
+  if (window.history.length > 1) window.history.back();
+  else navigate('/dashboard');
+});
 
 // ---------- Version badge ----------
 

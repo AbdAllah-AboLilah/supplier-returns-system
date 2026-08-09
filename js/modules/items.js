@@ -11,7 +11,7 @@ import { navigate } from '../core/router.js';
 import { autosaveField } from '../core/autosave.js';
 import { listErpSupplierRelations } from './supplier-items.js';
 
-const state = { page: 1, pageSize: 50, query: '', category: '' };
+const state = { page: 1, pageSize: 50, query: '', category: '', linked: '' };
 
 export async function findErpItems(query, limit = 8) {
   const items = await getAll('erpItems');
@@ -34,20 +34,33 @@ export async function renderItemsList(container) {
   const filtered = all
     .filter(i => fuzzyIncludes(i.name, state.query) || fuzzyIncludes(i.barcode || '', state.query))
     .filter(i => !state.category || i.category === state.category)
+    .filter(i => !state.linked || (state.linked === 'linked' ? !!linkCountByErp[i.id] : !linkCountByErp[i.id]))
     .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ar'));
+
+  const hasActiveFilters = !!(state.category || state.linked);
 
   container.innerHTML = `
     <div class="card">
       <div class="table-toolbar">
         <input type="search" id="items-search" placeholder="🔎 بحث بالاسم أو الباركود" style="max-width:280px;" value="${escapeHtml(state.query)}">
-        ${categories.length ? `
-        <select id="items-category-filter" style="max-width:180px;">
-          <option value="">كل الأقسام</option>
-          ${categories.map(c => `<option value="${escapeHtml(c)}" ${state.category === c ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
-        </select>` : ''}
         <div class="spacer"></div>
         <a href="#/items/import" class="btn btn-ghost">⇪ استيراد من Excel</a>
         <button class="btn btn-primary" id="btn-add-item">+ إضافة صنف</button>
+      </div>
+      <div class="filter-bar">
+        ${categories.length ? `
+        <label>القسم</label>
+        <select id="items-category-filter">
+          <option value="">كل الأقسام</option>
+          ${categories.map(c => `<option value="${escapeHtml(c)}" ${state.category === c ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+        </select>` : ''}
+        <label>الربط بالموردين</label>
+        <select id="items-linked-filter">
+          <option value="">الكل</option>
+          <option value="linked" ${state.linked === 'linked' ? 'selected' : ''}>مرتبط بمورد واحد على الأقل</option>
+          <option value="unlinked" ${state.linked === 'unlinked' ? 'selected' : ''}>غير مرتبط بأي مورد</option>
+        </select>
+        ${hasActiveFilters ? `<button class="btn btn-sm btn-ghost filter-clear" id="btn-clear-filters">✕ مسح الفلاتر</button>` : ''}
       </div>
       ${filtered.length ? `
       <div class="table-wrap" style="border:none;border-radius:0;">
@@ -60,8 +73,8 @@ export async function renderItemsList(container) {
       </div>` : `
       <div class="empty-state">
         <div class="empty-icon">📦</div>
-        <div class="empty-title">لا توجد أصناف بعد</div>
-        <div class="empty-hint">أضف صنفًا يدويًا أو استورد قائمة من Excel</div>
+        <div class="empty-title">لا توجد أصناف مطابقة</div>
+        <div class="empty-hint">${hasActiveFilters ? 'جرّب توسيع نطاق الفلاتر' : 'أضف صنفًا يدويًا أو استورد قائمة من Excel'}</div>
       </div>`}
       <div id="items-pagination"></div>
     </div>
@@ -112,6 +125,11 @@ export async function renderItemsList(container) {
 
   const catFilter = qs('#items-category-filter', container);
   if (catFilter) catFilter.addEventListener('change', () => { state.category = catFilter.value; state.page = 1; renderItemsList(container); });
+  qs('#items-linked-filter', container).addEventListener('change', (e) => { state.linked = e.target.value; state.page = 1; renderItemsList(container); });
+  qs('#btn-clear-filters', container)?.addEventListener('click', () => {
+    state.category = ''; state.linked = ''; state.page = 1;
+    renderItemsList(container);
+  });
 
   qs('#btn-add-item', container).addEventListener('click', () => openItemForm(container, null));
 }
