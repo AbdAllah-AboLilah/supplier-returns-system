@@ -9,7 +9,7 @@
 // "auto-update" actually work); when offline you fall back to
 // whatever was last cached.
 // =========================================================
-const CACHE_NAME = 'returns-system-v1.8.0';
+const CACHE_NAME = 'returns-system-v1.10.1';
 const APP_SHELL = [
   './',
   './index.html',
@@ -29,6 +29,7 @@ const APP_SHELL = [
   './js/modules/dashboard.js',
   './js/modules/suppliers.js',
   './js/modules/items.js',
+  './js/modules/item-links.js',
   './js/modules/excel-import.js',
   './js/modules/supplier-items.js',
   './js/modules/returns.js',

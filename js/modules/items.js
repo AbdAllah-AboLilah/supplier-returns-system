@@ -9,15 +9,9 @@ import { uid, nowIso, fmtMoney, fmtInt, escapeHtml, debounce, fuzzyIncludes,
 import { logAction } from '../core/audit.js';
 import { navigate } from '../core/router.js';
 import { autosaveField } from '../core/autosave.js';
-import { listErpSupplierRelations } from './supplier-items.js';
+import { listErpSupplierRelations } from './item-links.js';
 
 const state = { page: 1, pageSize: 50, query: '', category: '', linked: '' };
-
-export async function findErpItems(query, limit = 8) {
-  const items = await getAll('erpItems');
-  const filtered = items.filter(i => fuzzyIncludes(i.name, query) || fuzzyIncludes(i.barcode || '', query));
-  return filtered.slice(0, limit);
-}
 
 export async function getErpItemsCount() {
   return (await getAll('erpItems')).length;

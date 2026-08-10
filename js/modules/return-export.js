@@ -1,12 +1,14 @@
 // =========================================================
 // modules/return-export.js
-// Three ways to get a return's report out of the system:
+// Four ways to get a return's report out of the system:
 //   1. Excel (.xlsx)               — via SheetJS (loaded globally as XLSX)
 //   2. Image (.png)                — via html2canvas, renders an
 //                                     off-screen report and captures it
-//   3. Thermal receipt print view  — a narrow (80mm) print-only page
+//   3. WhatsApp                    — same image, handed to the native
+//                                     share sheet (Web Share API)
+//   4. Thermal receipt print view  — a narrow (80mm) print-only page
 //                                     for cashier thermal printers
-// All three respect the same column-visibility choices, picked once
+// All four respect the same column-visibility choices, picked once
 // in the export modal (e.g. hide cost columns before handing a copy
 // to a driver).
 // =========================================================
@@ -51,6 +53,7 @@ export function openExportOptionsModal(ret, lines, supplier) {
       <div class="export-actions">
         <button class="btn btn-primary" id="btn-exp-excel">⬇ تصدير Excel</button>
         <button class="btn btn-ghost" id="btn-exp-image">🖼 تنزيل كصورة</button>
+        <button class="btn btn-ghost" id="btn-exp-whatsapp">📱 مشاركة عبر واتساب</button>
         <button class="btn btn-gold" id="btn-exp-thermal">🧾 طباعة إيصال حراري</button>
       </div>
     `,
@@ -73,6 +76,15 @@ export function openExportOptionsModal(ret, lines, supplier) {
     const original = btn.textContent;
     btn.disabled = true; btn.textContent = 'جارِ التجهيز...';
     try { await exportToImage(ret, supplier, lines, keys); }
+    finally { btn.disabled = false; btn.textContent = original; }
+  });
+  qs('#btn-exp-whatsapp', node).addEventListener('click', async () => {
+    const keys = selectedKeys();
+    if (!keys.length) { toast('اختر عمودًا واحدًا على الأقل', 'error'); return; }
+    const btn = qs('#btn-exp-whatsapp', node);
+    const original = btn.textContent;
+    btn.disabled = true; btn.textContent = 'جارِ التجهيز...';
+    try { await shareReportImage(ret, supplier, lines, keys); }
     finally { btn.disabled = false; btn.textContent = original; }
   });
   qs('#btn-exp-thermal', node).addEventListener('click', async () => {
@@ -147,9 +159,8 @@ function buildReportElement(shopName, ret, supplier, lines, keys, { compact = fa
   return wrap;
 }
 
-export async function exportToImage(ret, supplier, lines, keys) {
-  if (typeof html2canvas === 'undefined') { toast('تعذّر تحميل مكتبة تصدير الصور، تحقق من الاتصال بالإنترنت', 'error'); return; }
-  const shopName = await getSetting('shopName', '');
+async function renderReportToBlob(shopName, ret, supplier, lines, keys) {
+  if (typeof html2canvas === 'undefined') throw new Error('html2canvas not loaded');
   const el = buildReportElement(shopName, ret, supplier, lines, keys);
   el.style.position = 'fixed';
   el.style.top = '0';
@@ -157,24 +168,78 @@ export async function exportToImage(ret, supplier, lines, keys) {
   document.body.appendChild(el);
   try {
     const canvas = await html2canvas(el, { scale: 2, backgroundColor: '#ffffff' });
-    canvas.toBlob((blob) => {
-      if (!blob) { toast('تعذّر إنشاء الصورة', 'error'); return; }
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = `${ret.returnNumber}.png`;
-      document.body.appendChild(a); a.click(); a.remove();
-      URL.revokeObjectURL(url);
-      toast('تم تنزيل الصورة', 'success');
-    }, 'image/png');
-  } catch (err) {
-    console.error(err);
-    toast('حدث خطأ أثناء إنشاء الصورة', 'error');
+    return await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
   } finally {
     el.remove();
   }
 }
 
-// ---------- 3. Thermal receipt print ----------
+export async function exportToImage(ret, supplier, lines, keys) {
+  if (typeof html2canvas === 'undefined') { toast('تعذّر تحميل مكتبة تصدير الصور، تحقق من الاتصال بالإنترنت', 'error'); return; }
+  try {
+    const shopName = await getSetting('shopName', '');
+    const blob = await renderReportToBlob(shopName, ret, supplier, lines, keys);
+    if (!blob) { toast('تعذّر إنشاء الصورة', 'error'); return; }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `${ret.returnNumber}.png`;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    toast('تم تنزيل الصورة', 'success');
+  } catch (err) {
+    console.error(err);
+    toast('حدث خطأ أثناء إنشاء الصورة', 'error');
+  }
+}
+
+// ---------- WhatsApp ----------
+// A website can never pre-select *which* WhatsApp contact something
+// goes to — that choice happens inside WhatsApp's own UI, for the same
+// privacy reason no site can read your contacts. What we *can* do:
+// hand the image straight to the phone's native share sheet (where
+// WhatsApp is one tap away, image already attached) via the Web Share
+// API. That only works on browsers that support sharing files — mostly
+// mobile Chrome/Safari, over HTTPS. Where it isn't available (typically
+// desktop), this falls back to downloading the image and opening
+// WhatsApp with a reminder to attach it manually.
+export async function shareReportImage(ret, supplier, lines, keys) {
+  if (typeof html2canvas === 'undefined') { toast('تعذّر تحميل مكتبة الصور، تحقق من الاتصال بالإنترنت', 'error'); return; }
+  try {
+    const shopName = await getSetting('shopName', '');
+    const blob = await renderReportToBlob(shopName, ret, supplier, lines, keys);
+    if (!blob) { toast('تعذّر إنشاء الصورة', 'error'); return; }
+
+    const fileName = `${ret.returnNumber}.png`;
+    const file = new File([blob], fileName, { type: 'image/png' });
+    const shareText = `مرتجعة ${ret.returnNumber}${supplier?.name ? ` — ${supplier.name}` : ''}`;
+
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: shareText, text: shareText });
+      } catch (err) {
+        if (err.name !== 'AbortError') throw err; // AbortError = person just closed the share sheet, not a failure
+      }
+      return;
+    }
+
+    // Fallback: no file-sharing support in this browser (common on
+    // desktop) — download the image, then open WhatsApp with the
+    // person prompted to attach the file that just downloaded.
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = fileName;
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(url);
+    const text = encodeURIComponent(`${shareText}\n📎 الصورة اتنزلت على جهازك — أرفقها هنا يدويًا.`);
+    window.open(`https://wa.me/?text=${text}`, '_blank');
+    toast('اتنزلت الصورة — أرفقها في واتساب يدويًا (المشاركة المباشرة للصور مش مدعومة في هذا المتصفح)', 'success');
+  } catch (err) {
+    console.error(err);
+    toast('حدث خطأ أثناء المشاركة', 'error');
+  }
+}
+
+// ---------- 4. Thermal receipt print ----------
 
 export async function openThermalPrintView(ret, supplier, lines, keys) {
   const shopName = await getSetting('shopName', '');

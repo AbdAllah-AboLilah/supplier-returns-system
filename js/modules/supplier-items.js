@@ -10,10 +10,10 @@
 //                     with even after the price changes.
 // =========================================================
 import { getAll, getById, getByIndex, put, remove, removeWhere } from '../core/db.js';
-import { uid, nowIso, fmtMoney, fmtDate, escapeHtml, fuzzyIncludes, debounce,
+import { uid, nowIso, fmtMoney, fmtDate, escapeHtml, fuzzyIncludes, normalizeArabic, debounce,
          openModal, confirmDialog, toast, el, qs, qsa } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
-import { findErpItems } from './items.js';
+import { findErpItems } from './item-links.js';
 
 // ---------- Data access ----------
 
@@ -39,7 +39,14 @@ export async function searchSupplierItems(supplierId, query, limit = 8) {
 
 export async function getOrCreateSupplierItem(supplierId, name) {
   const rows = await listBySupplier(supplierId);
-  const existing = rows.find(r => r.supplierItemName.trim().toLowerCase() === name.trim().toLowerCase());
+  // Plain trim+lowercase does nothing useful on Arabic text (no case to
+  // fold), so it only caught byte-for-byte identical names. Matching on
+  // the same normalization used for search (strips diacritics/tatweel,
+  // unifies alef/ya/ta-marbuta variants, collapses whitespace) is what
+  // actually recognizes "كريبسادة" and "كريب سادة" as the same item
+  // instead of silently creating a second row for it.
+  const target = normalizeArabic(name);
+  const existing = rows.find(r => normalizeArabic(r.supplierItemName) === target);
   if (existing) return existing;
   const record = {
     id: uid(), supplierId, supplierItemName: name.trim(),
@@ -47,7 +54,7 @@ export async function getOrCreateSupplierItem(supplierId, name) {
     createdAt: nowIso(), updatedAt: nowIso(),
   };
   await put('supplierItems', record);
-  await logAction('إضافة اسم صنف عند المورد', 'supplierItem', record.id, name);
+  logAction('إضافة اسم صنف عند المورد', 'supplierItem', record.id, name).catch(err => console.error('audit log failed:', err));
   return record;
 }
 
@@ -57,7 +64,7 @@ export async function linkErpItem(supplierItemId, erpItemId) {
   row.updatedAt = nowIso();
   await put('supplierItems', row);
   const erp = await getById('erpItems', erpItemId);
-  await logAction('ربط صنف مورد بصنف ERP', 'supplierItem', supplierItemId, `${row.supplierItemName} → ${erp?.name || ''}`);
+  logAction('ربط صنف مورد بصنف ERP', 'supplierItem', supplierItemId, `${row.supplierItemName} → ${erp?.name || ''}`).catch(err => console.error('audit log failed:', err));
   return row;
 }
 
@@ -66,20 +73,24 @@ export async function unlinkErpItem(supplierItemId) {
   row.erpItemId = null;
   row.updatedAt = nowIso();
   await put('supplierItems', row);
-  await logAction('فك ربط صنف مورد', 'supplierItem', supplierItemId, row.supplierItemName);
+  logAction('فك ربط صنف مورد', 'supplierItem', supplierItemId, row.supplierItemName).catch(err => console.error('audit log failed:', err));
   return row;
 }
 
-export async function updateCost(supplierItemId, newCost) {
-  const row = await getById('supplierItems', supplierItemId);
+export async function updateCost(supplierItemId, newCost, preloaded = null) {
+  // Cost edits happen constantly while filling in a return, so this is
+  // the hottest write path in the app — every extra round trip here is
+  // felt directly as typing lag. Skip the re-read when the caller
+  // already has the record (returns.js does), and don't block on the
+  // history/audit-log writes: they matter for the record, not for
+  // confirming *this* save succeeded, so let them finish in the background.
+  const row = preloaded || await getById('supplierItems', supplierItemId);
   const oldCost = row.currentCost;
   row.currentCost = Number(newCost) || 0;
   row.updatedAt = nowIso();
   await put('supplierItems', row);
-  await put('costHistory', {
-    id: uid(), supplierItemId, cost: row.currentCost, effectiveFrom: nowIso(), createdAt: nowIso(),
-  });
-  await logAction('تحديث تكلفة المورد', 'supplierItem', supplierItemId, `${row.supplierItemName}: ${fmtMoney(oldCost)} ← ${fmtMoney(row.currentCost)}`);
+  put('costHistory', { id: uid(), supplierItemId, cost: row.currentCost, effectiveFrom: nowIso(), createdAt: nowIso() }).catch(err => console.error('cost history write failed:', err));
+  logAction('تحديث تكلفة المورد', 'supplierItem', supplierItemId, `${row.supplierItemName}: ${fmtMoney(oldCost)} ← ${fmtMoney(row.currentCost)}`).catch(err => console.error('audit log failed:', err));
   return row;
 }
 
@@ -100,19 +111,19 @@ export async function listUnlinked() {
   return all.filter(r => !r.erpItemId).map(r => ({ ...r, supplierName: byId[r.supplierId]?.name || '—' }));
 }
 
-export async function listErpSupplierRelations(erpItemId) {
-  const all = await getAll('supplierItems');
-  const suppliers = await getAll('suppliers');
-  const byId = Object.fromEntries(suppliers.map(s => [s.id, s]));
-  return all.filter(r => r.erpItemId === erpItemId).map(r => ({ ...r, supplierName: byId[r.supplierId]?.name || '—' }));
-}
-
 // ---------- UI: mapping panel embedded in supplier detail page ----------
 
+const panelState = { unlinkedOnly: false, noCostOnly: false };
+
 export async function renderSupplierItemsPanel(container, supplierId) {
-  const rows = await listBySupplier(supplierId);
+  const allRows = await listBySupplier(supplierId);
   const erpItems = await getAll('erpItems');
   const erpById = Object.fromEntries(erpItems.map(i => [i.id, i]));
+
+  const rows = allRows
+    .filter(r => !panelState.unlinkedOnly || !r.erpItemId)
+    .filter(r => !panelState.noCostOnly || !r.currentCost);
+  const hasActiveFilters = panelState.unlinkedOnly || panelState.noCostOnly;
 
   container.innerHTML = `
     <div class="card">
@@ -121,6 +132,16 @@ export async function renderSupplierItemsPanel(container, supplierId) {
         <div class="spacer"></div>
         <button class="btn btn-primary btn-sm" id="btn-add-mapping">+ إضافة اسم صنف</button>
       </div>
+      ${allRows.length ? `
+      <div class="filter-bar">
+        <label class="flex items-center gap-8" style="cursor:pointer;font-weight:700;font-size:12.5px;">
+          <input type="checkbox" id="f-unlinked" ${panelState.unlinkedOnly ? 'checked' : ''}> غير مرتبط فقط
+        </label>
+        <label class="flex items-center gap-8" style="cursor:pointer;font-weight:700;font-size:12.5px;">
+          <input type="checkbox" id="f-nocost" ${panelState.noCostOnly ? 'checked' : ''}> بدون تكلفة فقط
+        </label>
+        ${hasActiveFilters ? `<button class="btn btn-sm btn-ghost filter-clear" id="btn-clear-filters">✕ مسح الفلاتر</button>` : ''}
+      </div>` : ''}
       ${rows.length ? `
       <table class="data-table">
         <thead><tr>
@@ -145,11 +166,18 @@ export async function renderSupplierItemsPanel(container, supplierId) {
       </table>` : `
       <div class="empty-state">
         <div class="empty-icon">🔗</div>
-        <div class="empty-title">لا توجد أصناف مسجلة لهذا المورد بعد</div>
-        <div class="empty-hint">أضفها هنا أو ستُضاف تلقائيًا أول مرة تكتبها داخل مرتجعة</div>
+        <div class="empty-title">${allRows.length ? 'لا توجد أصناف مطابقة للفلاتر' : 'لا توجد أصناف مسجلة لهذا المورد بعد'}</div>
+        <div class="empty-hint">${allRows.length ? 'جرّب مسح الفلاتر' : 'أضفها هنا أو ستُضاف تلقائيًا أول مرة تكتبها داخل مرتجعة'}</div>
       </div>`}
     </div>
   `;
+
+  qs('#f-unlinked', container)?.addEventListener('change', (e) => { panelState.unlinkedOnly = e.target.checked; renderSupplierItemsPanel(container, supplierId); });
+  qs('#f-nocost', container)?.addEventListener('change', (e) => { panelState.noCostOnly = e.target.checked; renderSupplierItemsPanel(container, supplierId); });
+  qs('#btn-clear-filters', container)?.addEventListener('click', () => {
+    panelState.unlinkedOnly = false; panelState.noCostOnly = false;
+    renderSupplierItemsPanel(container, supplierId);
+  });
 
   qs('#btn-add-mapping', container).addEventListener('click', () => openAddMappingModal(supplierId, () => renderSupplierItemsPanel(container, supplierId)));
   container.querySelectorAll('.btn-link').forEach(b => b.addEventListener('click', () => openLinkModal(b.dataset.id, () => renderSupplierItemsPanel(container, supplierId))));

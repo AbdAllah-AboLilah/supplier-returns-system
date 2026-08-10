@@ -13,7 +13,43 @@ function isToday(iso) {
   return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
 }
 
+// The dashboard is a snapshot fetched once per visit, not a live
+// subscription — so if you leave it open (or come back to an already-
+// open tab) after data changed on this or another device, it used to
+// just sit there unchanged until you navigated away and back. This
+// keeps it refreshing quietly while it's actually the visible screen,
+// and cleans itself up the moment you navigate elsewhere so it doesn't
+// keep firing (or pile up duplicate timers) in the background.
+let refreshTimer = null;
+let visibilityHandler = null;
+const REFRESH_INTERVAL_MS = 30000;
+
+function onDashboard() {
+  const hash = window.location.hash || '#/dashboard';
+  return hash === '#/dashboard' || hash === '#/' || hash === '';
+}
+
+function cleanupDashboardRefresh() {
+  if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+  if (visibilityHandler) { document.removeEventListener('visibilitychange', visibilityHandler); visibilityHandler = null; }
+}
+
 export async function renderDashboard(container) {
+  cleanupDashboardRefresh();
+  await renderDashboardContent(container);
+
+  refreshTimer = setInterval(() => {
+    if (!onDashboard()) { cleanupDashboardRefresh(); return; }
+    renderDashboardContent(container);
+  }, REFRESH_INTERVAL_MS);
+
+  visibilityHandler = () => {
+    if (document.visibilityState === 'visible' && onDashboard()) renderDashboardContent(container);
+  };
+  document.addEventListener('visibilitychange', visibilityHandler);
+}
+
+async function renderDashboardContent(container) {
   const [returns, suppliers, erpItems, unlinked] = await Promise.all([
     listReturnsJoined(), getAll('suppliers'), getAll('erpItems'), listUnlinked(),
   ]);

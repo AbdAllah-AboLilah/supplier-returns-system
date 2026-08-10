@@ -120,7 +120,7 @@ export async function addItemLine(returnId, supplierId, supplierItemName, qty, c
         // the freshest known price for this supplier item — record it as
         // the current cost (with history) so it's the default suggestion
         // next time, anywhere in the system. Past returns are untouched.
-        await updateSupplierItemCost(si.id, newCost);
+        await updateSupplierItemCost(si.id, newCost, si);
       }
     }
   }
@@ -137,9 +137,11 @@ export async function addItemLine(returnId, supplierId, supplierItemName, qty, c
     createdAt: nowIso(),
   };
   await put('returnItems', line);
-  const ret = await getById('returns', returnId);
-  await touchReturn(ret);
-  await logAction('إضافة صنف للمرتجعة', 'return', returnId, `${si.supplierItemName} × ${quantity}`);
+  // Bumping the parent return's updatedAt and writing the audit-log
+  // entry are both "nice to have, not urgent" — don't make the person
+  // wait on two more round trips just to see the new line appear.
+  getById('returns', returnId).then(ret => { if (ret) touchReturn(ret); }).catch(err => console.error('touchReturn failed:', err));
+  logAction('إضافة صنف للمرتجعة', 'return', returnId, `${si.supplierItemName} × ${quantity}`).catch(err => console.error('audit log failed:', err));
   return line;
 }
 
@@ -154,21 +156,21 @@ export async function updateLine(lineId, { qty, unitCost }) {
     // updating the known cost for that supplier item going forward,
     // without rewriting any other return that already used the old cost.
     const si = await getById('supplierItems', line.supplierItemId);
-    if (si && newCost !== Number(si.currentCost)) await updateSupplierItemCost(si.id, newCost);
+    if (si && newCost !== Number(si.currentCost)) await updateSupplierItemCost(si.id, newCost, si);
   }
   line.total = line.qty * line.unitCost;
   await put('returnItems', line);
-  const ret = await getById('returns', line.returnId);
-  await touchReturn(ret);
+  // Same reasoning as addItemLine: don't block the save confirmation on
+  // a cosmetic "last modified" timestamp bump on the parent return.
+  getById('returns', line.returnId).then(ret => { if (ret) touchReturn(ret); }).catch(err => console.error('touchReturn failed:', err));
   return line;
 }
 
 export async function removeLine(lineId) {
   const line = await getById('returnItems', lineId);
   await remove('returnItems', lineId);
-  const ret = await getById('returns', line.returnId);
-  await touchReturn(ret);
-  await logAction('حذف صنف من المرتجعة', 'return', line.returnId, line.supplierItemName);
+  getById('returns', line.returnId).then(ret => { if (ret) touchReturn(ret); }).catch(err => console.error('touchReturn failed:', err));
+  logAction('حذف صنف من المرتجعة', 'return', line.returnId, line.supplierItemName).catch(err => console.error('audit log failed:', err));
 }
 
 export async function saveNotes(returnId, notes) {
