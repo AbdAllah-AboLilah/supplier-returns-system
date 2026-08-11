@@ -9,7 +9,7 @@
 // "auto-update" actually work); when offline you fall back to
 // whatever was last cached.
 // =========================================================
-const CACHE_NAME = 'returns-system-v1.10.1';
+const CACHE_NAME = 'returns-system-v1.11.0';
 const APP_SHELL = [
   './',
   './index.html',
@@ -36,6 +36,7 @@ const APP_SHELL = [
   './js/modules/return-export.js',
   './js/modules/audit-log.js',
   './js/modules/settings.js',
+  './js/modules/invoice-reviews.js',
   './icons/icon.svg',
 ];
 

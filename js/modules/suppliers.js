@@ -56,7 +56,7 @@ export async function renderSuppliersList(container) {
   qs('#btn-add-supplier', container).addEventListener('click', () => openSupplierForm(container, null));
 }
 
-function openSupplierForm(container, supplierId, onSaved) {
+export function openSupplierForm(container, supplierId, onSaved) {
   const load = supplierId ? getById('suppliers', supplierId) : Promise.resolve(null);
   load.then((existing) => {
     const isEdit = !!existing;

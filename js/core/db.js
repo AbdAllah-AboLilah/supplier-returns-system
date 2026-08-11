@@ -160,7 +160,7 @@ export function setSetting(key, value) {
 
 // ---------- Full backup / restore (all collections, one JSON file) ----------
 
-export const ALL_STORES = ['suppliers', 'erpItems', 'supplierItems', 'costHistory', 'returns', 'returnItems', 'auditLog', 'counters', 'settings'];
+export const ALL_STORES = ['suppliers', 'erpItems', 'supplierItems', 'costHistory', 'returns', 'returnItems', 'auditLog', 'counters', 'settings', 'invoiceReviews', 'invoiceReviewItems'];
 
 export async function exportAllData() {
   const data = {};

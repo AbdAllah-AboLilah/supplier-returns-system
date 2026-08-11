@@ -16,6 +16,7 @@ import { renderUnlinkedView } from './modules/supplier-items.js';
 import { renderReturnsList, renderReturnDetail } from './modules/returns.js';
 import { renderAuditLogView } from './modules/audit-log.js';
 import { renderSettingsView } from './modules/settings.js';
+import { renderInvoiceReviewsList, renderInvoiceReviewDetail } from './modules/invoice-reviews.js';
 import { applyShopName } from './core/brand.js';
 import { migrateLocalDataToFirebaseIfNeeded } from './core/migrate-to-firebase.js';
 
@@ -38,6 +39,8 @@ registerRoute('/returns/:id', { navKey: 'returns-active', title: 'المرتجع
 
 registerRoute('/audit', { navKey: 'audit', title: 'سجل العمليات' }, ({ container }) => renderAuditLogView(container));
 registerRoute('/settings', { navKey: 'settings', title: 'الإعدادات' }, ({ container }) => renderSettingsView(container));
+registerRoute('/invoice-reviews', { navKey: 'invoice-reviews', title: 'مراجعة الفواتير' }, ({ container }) => renderInvoiceReviewsList(container));
+registerRoute('/invoice-reviews/:id', { navKey: 'invoice-reviews', title: 'مراجعة فاتورة' }, ({ container, params }) => renderInvoiceReviewDetail(container, params.id));
 
 // ---------- Shell chrome: nav highlighting + topbar title ----------
 

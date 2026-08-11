@@ -186,22 +186,109 @@ export async function renderSupplierItemsPanel(container, supplierId) {
 }
 
 function openAddMappingModal(supplierId, onDone) {
-  const { close } = openModal({
-    title: 'إضافة اسم صنف عند المورد',
-    bodyHtml: `<div class="field"><label>اسم الصنف كما يكتبه المورد *</label><input type="text" id="f-name" placeholder="مثال: كريبسادة لوكس"></div>`,
+  const { close, node } = openModal({
+    title: 'إضافة / تعديل صنف عند المورد',
+    bodyHtml: `
+      <div class="field autocomplete">
+        <label>اسم الصنف كما يكتبه المورد *</label>
+        <input type="text" id="f-name" placeholder="مثال: كريبسادة لوكس" autocomplete="off">
+        <div class="autocomplete-list" id="name-results" style="display:none;"></div>
+        <div class="hint">هيظهرلك أصناف مشابهة موجودة بالفعل عشان تتفادى تكرارها.</div>
+      </div>
+      <div class="field autocomplete">
+        <label>ربط بصنف نظام ERP (اختياري)</label>
+        <input type="text" id="f-erp-search" placeholder="اكتب اسم الصنف أو الباركود..." autocomplete="off">
+        <div class="autocomplete-list" id="erp-results" style="display:none;"></div>
+        <div class="small text-dim mt-8" id="erp-selected"></div>
+      </div>
+      <div class="field"><label>التكلفة عند هذا المورد (اختياري)</label><input type="number" step="0.01" id="f-cost" placeholder="0.00"></div>
+    `,
     footerButtons: [
       { label: 'إلغاء', className: 'btn-ghost', onClick: (c) => c() },
       {
-        label: 'إضافة', className: 'btn-primary',
+        label: 'حفظ', className: 'btn-primary',
         onClick: async (c) => {
-          const name = qs('#f-name').value.trim();
+          const name = qs('#f-name', node).value.trim();
           if (!name) { toast('الاسم مطلوب', 'error'); return; }
-          await getOrCreateSupplierItem(supplierId, name);
+          const si = await getOrCreateSupplierItem(supplierId, name);
+          const erpItemId = qs('#f-erp-search', node).dataset.selectedId || '';
+          if (erpItemId) await linkErpItem(si.id, erpItemId);
+          const costVal = qs('#f-cost', node).value;
+          // Re-read after the possible link above — passing the pre-link
+          // `si` here would silently overwrite that link with the stale copy.
+          if (costVal !== '') await updateCost(si.id, costVal);
           c(); onDone();
         },
       },
     ],
   });
+
+  // Name field: suggest existing supplier items as you type, and — if
+  // you pick one — quietly switch this into "editing that item" mode
+  // (pre-filling its current link/cost) instead of risking a near-duplicate.
+  const nameInput = qs('#f-name', node);
+  const nameResults = qs('#name-results', node);
+  const erpSearchInput = qs('#f-erp-search', node);
+  const erpSelectedLabel = qs('#erp-selected', node);
+  const costInput = qs('#f-cost', node);
+
+  nameInput.addEventListener('input', debounce(async () => {
+    const q = nameInput.value.trim();
+    if (!q) { nameResults.style.display = 'none'; return; }
+    const matches = await searchSupplierItems(supplierId, q, 6);
+    if (!matches.length) { nameResults.style.display = 'none'; return; }
+    nameResults.innerHTML = matches.map(m => `
+      <div class="autocomplete-item" data-id="${m.id}" data-name="${escapeHtml(m.supplierItemName)}" data-cost="${m.currentCost || 0}" data-erp-id="${m.erpItemId || ''}" data-erp-name="${escapeHtml(m.erpItemName || '')}">
+        <b>${escapeHtml(m.supplierItemName)}</b>
+        <div class="ac-sub">موجود بالفعل — ${m.erpItemName ? escapeHtml(m.erpItemName) : 'غير مرتبط'} ${m.currentCost ? `· ${fmtMoney(m.currentCost)} ج` : ''}</div>
+      </div>
+    `).join('');
+    nameResults.style.display = 'block';
+    nameResults.querySelectorAll('.autocomplete-item').forEach(it => {
+      it.addEventListener('click', () => {
+        nameInput.value = it.dataset.name;
+        costInput.value = Number(it.dataset.cost) || '';
+        if (it.dataset.erpId) {
+          erpSearchInput.value = it.dataset.erpName;
+          erpSearchInput.dataset.selectedId = it.dataset.erpId;
+          erpSelectedLabel.textContent = `✓ مرتبط حاليًا بـ ${it.dataset.erpName}`;
+        } else {
+          erpSearchInput.value = '';
+          erpSearchInput.dataset.selectedId = '';
+          erpSelectedLabel.textContent = '';
+        }
+        nameResults.style.display = 'none';
+        toast('هتعدّل على الصنف الموجود بدل ما تضيف نسخة جديدة', 'default');
+      });
+    });
+  }, 200));
+
+  // ERP link field: same search-and-pick pattern as the standalone link modal.
+  erpSearchInput.addEventListener('input', debounce(async () => {
+    const q = erpSearchInput.value.trim();
+    erpSearchInput.dataset.selectedId = ''; // typing invalidates any previous pick
+    erpSelectedLabel.textContent = '';
+    if (!q) { qs('#erp-results', node).style.display = 'none'; return; }
+    const matches = await findErpItems(q, 6);
+    const box = qs('#erp-results', node);
+    if (!matches.length) { box.innerHTML = `<div class="autocomplete-empty">لا توجد نتائج</div>`; box.style.display = 'block'; return; }
+    box.innerHTML = matches.map(m => `<div class="autocomplete-item" data-id="${m.id}" data-name="${escapeHtml(m.name)}"><b>${escapeHtml(m.name)}</b><div class="ac-sub">${escapeHtml(m.barcode || '')}</div></div>`).join('');
+    box.style.display = 'block';
+    box.querySelectorAll('.autocomplete-item').forEach(it => {
+      it.addEventListener('click', () => {
+        erpSearchInput.value = it.dataset.name;
+        erpSearchInput.dataset.selectedId = it.dataset.id;
+        erpSelectedLabel.textContent = `✓ ${it.dataset.name}`;
+        box.style.display = 'none';
+      });
+    });
+  }, 200));
+
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('.autocomplete')) { nameResults.style.display = 'none'; qs('#erp-results', node).style.display = 'none'; }
+  }, { once: true });
+
+  nameInput.focus();
 }
 
 function openLinkModal(supplierItemId, onDone) {
