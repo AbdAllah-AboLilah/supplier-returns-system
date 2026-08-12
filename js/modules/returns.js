@@ -461,6 +461,12 @@ export async function renderReturnDetail(container, returnId) {
             <div class="autocomplete-list" id="add-item-results" style="display:none;"></div>
           </div>
           <div class="field" style="flex:0 0 90px;"><label>الكمية</label><input type="number" id="add-item-qty" value="1" min="1"></div>
+          <div class="field" style="flex:0 0 60px;"><label title="ق = سعر القطعة، د = سعر الدستة (هيتحول لسعر القطعة تلقائيًا)">الوحدة</label>
+            <select id="add-item-unit-type">
+              <option value="piece">ق</option>
+              <option value="dozen">د</option>
+            </select>
+          </div>
           <div class="field" style="flex:0 0 110px;"><label>التكلفة</label><input type="number" step="0.01" id="add-item-cost" placeholder="0.00"></div>
           <div class="field" style="flex:0 0 auto;"><button class="btn btn-primary" id="btn-add-item">+ إضافة</button></div>
         </div>
@@ -597,6 +603,11 @@ function wireDetailEvents(container, ret, lines, supplier) {
             costInput.dataset.fallback = isFallback ? '1' : '0';
             costInput.classList.toggle('cost-fallback', isFallback);
             costInput.title = isFallback ? 'تكلفة النظام الافتراضية — لسه محدّدتش تكلفة هذا المورد الفعلية' : '';
+            // Suggested costs are always stored per-piece — reset the
+            // unit toggle so a leftover "د" selection doesn't silently
+            // halve-by-12 a value that's already correct as typed.
+            const unitTypeEl = qs('#add-item-unit-type', container);
+            if (unitTypeEl) unitTypeEl.value = 'piece';
           }
           resultsBox.style.display = 'none';
           costInput?.focus();
@@ -616,15 +627,35 @@ function wireDetailEvents(container, ret, lines, supplier) {
   });
 
   qs('#btn-add-item', container)?.addEventListener('click', async () => {
+    const btn = qs('#btn-add-item', container);
+    if (btn.disabled) return; // already mid-submit — ignore a rapid second click
     const name = qs('#add-item-name', container).value.trim();
     const qty = qs('#add-item-qty', container).value;
     const costEl = qs('#add-item-cost', container);
-    const cost = costEl?.value;
     const costIsFallback = costEl?.dataset.fallback === '1';
+    let cost = costEl?.value;
+    // "د" means the price just typed is per-dozen, not per-piece — convert
+    // it once here so everything downstream (the line, cost sync, cost
+    // history) keeps working with a single, consistent per-piece price.
+    const unitType = qs('#add-item-unit-type', container)?.value || 'piece';
+    if (unitType === 'dozen' && cost !== '' && cost !== undefined && cost !== null) {
+      cost = String((Number(cost) || 0) / 12);
+    }
     if (!name) { toast('اكتب اسم الصنف أولًا', 'error'); return; }
-    await addItemLine(ret.id, ret.supplierId, name, qty, cost, costIsFallback);
-    await renderReturnDetail(container, ret.id);
-    qs('#add-item-name', container)?.focus();
+
+    const originalLabel = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'جارِ الإضافة...';
+    try {
+      await addItemLine(ret.id, ret.supplierId, name, qty, cost, costIsFallback);
+      await renderReturnDetail(container, ret.id);
+      qs('#add-item-name', container)?.focus();
+    } catch (err) {
+      console.error(err);
+      toast('حدث خطأ أثناء إضافة الصنف، حاول تاني', 'error');
+      btn.disabled = false;
+      btn.textContent = originalLabel;
+    }
   });
 
   const notesInput = qs('#ret-notes', container);
