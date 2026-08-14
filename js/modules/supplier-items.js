@@ -159,6 +159,7 @@ export async function renderSupplierItemsPanel(container, supplierId) {
                 <button class="btn btn-sm btn-ghost btn-link" data-id="${r.id}">${r.erpItemId ? 'تغيير الربط' : 'ربط'}</button>
                 <button class="btn btn-sm btn-ghost btn-cost" data-id="${r.id}">التكلفة</button>
                 <button class="btn btn-sm btn-ghost btn-hist" data-id="${r.id}">السجل</button>
+                <button class="btn btn-sm btn-ghost btn-del-mapping" data-id="${r.id}" data-name="${escapeHtml(r.supplierItemName)}">حذف</button>
               </td>
             </tr>
           `).join('')}
@@ -183,6 +184,14 @@ export async function renderSupplierItemsPanel(container, supplierId) {
   container.querySelectorAll('.btn-link').forEach(b => b.addEventListener('click', () => openLinkModal(b.dataset.id, () => renderSupplierItemsPanel(container, supplierId))));
   container.querySelectorAll('.btn-cost').forEach(b => b.addEventListener('click', () => openCostModal(b.dataset.id, () => renderSupplierItemsPanel(container, supplierId))));
   container.querySelectorAll('.btn-hist').forEach(b => b.addEventListener('click', () => openHistoryModal(b.dataset.id)));
+  container.querySelectorAll('.btn-del-mapping').forEach(b => b.addEventListener('click', async () => {
+    const ok = await confirmDialog(`سيتم حذف "${b.dataset.name}" وسجل تكلفته نهائيًا من هذا المورد. المرتجعات السابقة اللي استخدمته مش هتتأثر. هل أنت متأكد؟`, { danger: true, okLabel: 'حذف' });
+    if (!ok) return;
+    await deleteSupplierItem(b.dataset.id);
+    await logAction('حذف صنف عند المورد', 'supplierItem', b.dataset.id, b.dataset.name);
+    toast('تم الحذف', 'success');
+    renderSupplierItemsPanel(container, supplierId);
+  }));
 }
 
 function openAddMappingModal(supplierId, onDone) {

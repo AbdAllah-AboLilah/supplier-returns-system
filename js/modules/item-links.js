@@ -17,8 +17,8 @@
 // items.js and supplier-items.js depend on this file and never on
 // each other.
 // =========================================================
-import { getAll } from '../core/db.js';
-import { fuzzyIncludes } from '../core/utils.js';
+import { getAll, getById, put } from '../core/db.js';
+import { fuzzyIncludes, nowIso } from '../core/utils.js';
 
 export async function findErpItems(query, limit = 8) {
   const items = await getAll('erpItems');
@@ -31,4 +31,17 @@ export async function listErpSupplierRelations(erpItemId) {
   const suppliers = await getAll('suppliers');
   const byId = Object.fromEntries(suppliers.map(s => [s.id, s]));
   return all.filter(r => r.erpItemId === erpItemId).map(r => ({ ...r, supplierName: byId[r.supplierId]?.name || '—' }));
+}
+
+// Used when deleting an ERP item that's still linked to one or more
+// suppliers: rather than leaving those supplierItems pointing at an
+// item that no longer exists, drop them back to the normal "غير
+// مرتبط" state — same as any newly-added, not-yet-linked supplier item.
+export async function unlinkAllSuppliersFromErpItem(erpItemId) {
+  const relations = await listErpSupplierRelations(erpItemId);
+  for (const r of relations) {
+    const row = await getById('supplierItems', r.id);
+    if (row) { row.erpItemId = null; row.updatedAt = nowIso(); await put('supplierItems', row); }
+  }
+  return relations.length;
 }

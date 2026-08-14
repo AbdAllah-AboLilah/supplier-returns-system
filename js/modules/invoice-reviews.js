@@ -18,6 +18,7 @@ import { uid, nowIso, fmtMoney, fmtInt, fmtDate, escapeHtml, fuzzyIncludes, debo
 import { autosaveField } from '../core/autosave.js';
 import { navigate } from '../core/router.js';
 import { openSupplierForm } from './suppliers.js';
+import { findErpItems } from './item-links.js';
 
 const DEFAULT_UNITS = [
   { key: 'piece', label: 'قطعة', multiplier: 1 },
@@ -153,8 +154,14 @@ export async function deleteReview(reviewId) {
   await remove('invoiceReviews', reviewId);
 }
 
-export async function addReviewItem(reviewId, { qty, unitKey, price }) {
-  const line = { id: uid(), reviewId, qty: Number(qty) || 0, unitKey, price: Number(price) || 0, createdAt: nowIso() };
+export async function addReviewItem(reviewId, { itemName, erpItemId, qty, unitKey, price }) {
+  const line = {
+    id: uid(), reviewId,
+    itemName: (itemName || '').trim(),
+    erpItemId: erpItemId || null,
+    qty: Number(qty) || 0, unitKey, price: Number(price) || 0,
+    createdAt: nowIso(),
+  };
   await put('invoiceReviewItems', line);
   getById('invoiceReviews', reviewId).then(r => { if (r) touch(r); });
   return line;
@@ -333,12 +340,13 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
       <div class="card-header"><h3>أصناف الفاتورة</h3><span class="small text-dim">${fmtInt(items.length)} صنف · حفظ تلقائي أثناء الكتابة</span></div>
       ${items.length ? `
       <table class="data-table">
-        <thead><tr><th class="num">الكمية</th><th>الوحدة</th><th class="num">السعر</th><th class="num">الكمية الفعلية</th><th class="num">الإجمالي</th><th></th></tr></thead>
+        <thead><tr><th>الصنف</th><th class="num">الكمية</th><th>الوحدة</th><th class="num">السعر</th><th class="num">الكمية الفعلية</th><th class="num">الإجمالي</th><th></th></tr></thead>
         <tbody>
           ${items.map(i => {
             const c = computeLine(i, units);
             return `
             <tr data-line="${i.id}">
+              <td data-label="الصنف">${i.itemName ? `<b>${escapeHtml(i.itemName)}</b>` : '<span class="text-dim">—</span>'}${i.itemName ? (i.erpItemId ? '' : ' <span class="badge badge-warn">⚠️ غير مرتبط</span>') : ''}</td>
               <td class="num" data-label="الكمية"><input type="number" min="0" step="any" class="ln-qty" data-id="${i.id}" value="${i.qty}" style="width:80px;text-align:center;"></td>
               <td data-label="الوحدة">
                 <select class="ln-unit" data-id="${i.id}">
@@ -346,7 +354,7 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
                 </select>
               </td>
               <td class="num" data-label="السعر"><input type="number" min="0" step="0.01" class="ln-price" data-id="${i.id}" value="${i.price}" style="width:90px;text-align:center;"></td>
-              <td class="num text-dim" id="ln-actual-${i.id}" data-label="الكمية الفعلية">${fmtInt(c.actualQty)}</td>
+              <td class="num text-dim" id="ln-actual-${i.id}" data-label="الكمية الفعلية">${fmtInt(c.actualQty)} قطعة</td>
               <td class="num text-mono" id="ln-total-${i.id}" data-label="الإجمالي">${fmtMoney(c.total)}</td>
               <td><button class="btn btn-sm btn-ghost ln-remove" data-id="${i.id}">حذف</button></td>
             </tr>`;
@@ -354,8 +362,8 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
         </tbody>
         <tfoot>
           <tr>
-            <td colspan="3"><b>الإجمالي</b></td>
-            <td class="num text-mono" id="footer-qty">${fmtInt(totalQty)}</td>
+            <td colspan="4"><b>الإجمالي</b></td>
+            <td class="num text-mono" id="footer-qty">${fmtInt(totalQty)} قطعة</td>
             <td class="num text-mono" id="footer-total"><b>${fmtMoney(totalValue)}</b></td>
             <td></td>
           </tr>
@@ -365,7 +373,12 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
       <div class="card-pad" style="border-top:1px solid var(--line);">
         <div class="section-title">إضافة صنف</div>
         <div class="form-row" style="align-items:flex-end;">
-          <div class="field" style="flex:0 0 100px;"><label>الكمية</label><input type="number" id="add-qty" min="0" step="any" value="1"></div>
+          <div class="field autocomplete" style="flex:2;">
+            <label>الصنف (اختياري — يربط بقاعدة أصناف ERP)</label>
+            <input type="text" id="add-item-name" placeholder="ابدأ الكتابة للبحث في أصناف ERP..." autocomplete="off">
+            <div class="autocomplete-list" id="add-item-erp-results" style="display:none;"></div>
+          </div>
+          <div class="field" style="flex:0 0 90px;"><label>الكمية</label><input type="number" id="add-qty" min="0" step="any" value="1"></div>
           <div class="field" style="flex:0 0 120px;">
             <div class="field-label-row"><label style="margin:0;">الوحدة</label><a href="#" id="btn-manage-units" class="small">إدارة الوحدات</a></div>
             <select id="add-unit">${units.map(u => `<option value="${u.key}">${escapeHtml(u.label)}</option>`).join('')}</select>
@@ -482,16 +495,42 @@ function wireDetailEvents(container, review, items, units, suppliers) {
 
   qs('#btn-manage-units', container).addEventListener('click', (e) => { e.preventDefault(); openUnitsManagerModal(() => renderInvoiceReviewDetail(container, review.id)); });
 
+  // Item-name field: search ERP items as you type and link to one on
+  // pick. Typing without picking still works — the line is just saved
+  // unlinked (⚠️ badge), same pattern as unlinked supplier items elsewhere.
+  const itemNameInput = qs('#add-item-name', container);
+  const erpResultsBox = qs('#add-item-erp-results', container);
+  itemNameInput.addEventListener('input', debounce(async () => {
+    itemNameInput.dataset.erpId = ''; // typing invalidates any previous pick
+    const q = itemNameInput.value.trim();
+    if (!q) { erpResultsBox.style.display = 'none'; return; }
+    const matches = await findErpItems(q, 8);
+    if (!matches.length) { erpResultsBox.innerHTML = `<div class="autocomplete-empty">لا توجد نتائج — هتتحفظ كصنف غير مرتبط</div>`; erpResultsBox.style.display = 'block'; return; }
+    erpResultsBox.innerHTML = matches.map(m => `<div class="autocomplete-item" data-id="${m.id}" data-name="${escapeHtml(m.name)}"><b>${escapeHtml(m.name)}</b><div class="ac-sub">${escapeHtml(m.barcode || '')}</div></div>`).join('');
+    erpResultsBox.style.display = 'block';
+    erpResultsBox.querySelectorAll('.autocomplete-item').forEach(it => {
+      it.addEventListener('click', () => {
+        itemNameInput.value = it.dataset.name;
+        itemNameInput.dataset.erpId = it.dataset.id;
+        erpResultsBox.style.display = 'none';
+        qs('#add-qty', container)?.focus();
+      });
+    });
+  }, 200));
+  document.addEventListener('click', (e) => { if (!e.target.closest('.autocomplete')) erpResultsBox.style.display = 'none'; }, { once: true });
+
   qs('#btn-add-line', container).addEventListener('click', async () => {
+    const itemName = itemNameInput.value.trim();
+    const erpItemId = itemNameInput.dataset.erpId || null;
     const qty = qs('#add-qty', container).value;
     const unitKey = qs('#add-unit', container).value;
     const price = qs('#add-price', container).value;
     if (!qty || Number(qty) <= 0) { toast('اكتب الكمية أولًا', 'error'); return; }
     const lastUnit = unitKey; // remember for next row, matches original tool's UX
-    await addReviewItem(review.id, { qty, unitKey, price });
+    await addReviewItem(review.id, { itemName, erpItemId, qty, unitKey, price });
     await renderInvoiceReviewDetail(container, review.id);
     qs('#add-unit', container).value = lastUnit;
-    qs('#add-qty', container)?.focus();
+    qs('#add-item-name', container)?.focus();
   });
 
   qs('#btn-copy', container).addEventListener('click', () => copyReviewText(review, items, units, suppliers));
@@ -599,10 +638,12 @@ function reviewSummaryText(review, items, units, suppliers) {
   lines.push('');
   items.forEach((i, idx) => {
     const c = computeLine(i, units);
-    lines.push(`${idx + 1}. ${fmtInt(c.qty)} ${c.unit.label} × ${fmtMoney(c.price)} = ${fmtMoney(c.total)}`);
+    const namePart = i.itemName ? `${i.itemName} — ` : '';
+    lines.push(`${idx + 1}. ${namePart}الكمية: ${fmtInt(c.qty)} ${c.unit.label} | الكمية الفعلية: ${fmtInt(c.actualQty)} قطعة | السعر: ${fmtMoney(c.price)} | الإجمالي: ${fmtMoney(c.total)}`);
   });
+  const totalQty = items.reduce((s, i) => s + computeLine(i, units).actualQty, 0);
   const totalValue = items.reduce((s, i) => s + computeLine(i, units).total, 0);
-  lines.push('', `الإجمالي: ${fmtMoney(totalValue)}`);
+  lines.push('', `إجمالي الكمية: ${fmtInt(totalQty)} قطعة`, `إجمالي الفاتورة: ${fmtMoney(totalValue)}`);
   return lines.join('\n');
 }
 
@@ -618,9 +659,10 @@ async function copyReviewText(review, items, units, suppliers) {
 
 function buildReviewReportElement(review, items, units, suppliers) {
   const supplierName = review.supplierId ? (suppliers.find(s => s.id === review.supplierId)?.name || review.supplierName) : (review.supplierName || '—');
+  const totalQty = items.reduce((s, i) => s + computeLine(i, units).actualQty, 0);
   const totalValue = items.reduce((s, i) => s + computeLine(i, units).total, 0);
   const wrap = document.createElement('div');
-  wrap.style.cssText = `direction:rtl;background:#fff;padding:24px;font-family:'Tajawal',system-ui,sans-serif;color:#161C2E;width:560px;`;
+  wrap.style.cssText = `direction:rtl;background:#fff;padding:24px;font-family:'Tajawal',system-ui,sans-serif;color:#161C2E;width:620px;`;
   wrap.innerHTML = `
     <div style="border-bottom:2px solid #1F2A44;padding-bottom:10px;margin-bottom:12px;">
       <div style="font-weight:900;font-size:16px;">مراجعة فاتورة ${escapeHtml(review.reviewNumber)}</div>
@@ -628,8 +670,10 @@ function buildReviewReportElement(review, items, units, suppliers) {
     </div>
     <table style="width:100%;border-collapse:collapse;font-size:12.5px;">
       <thead><tr>
+        <th style="text-align:right;padding:5px;border-bottom:1px solid #CBD1DE;color:#5B6479;font-size:10.5px;">الصنف</th>
         <th style="text-align:right;padding:5px;border-bottom:1px solid #CBD1DE;color:#5B6479;font-size:10.5px;">الكمية</th>
         <th style="text-align:right;padding:5px;border-bottom:1px solid #CBD1DE;color:#5B6479;font-size:10.5px;">الوحدة</th>
+        <th style="text-align:right;padding:5px;border-bottom:1px solid #CBD1DE;color:#5B6479;font-size:10.5px;">الكمية الفعلية</th>
         <th style="text-align:right;padding:5px;border-bottom:1px solid #CBD1DE;color:#5B6479;font-size:10.5px;">السعر</th>
         <th style="text-align:right;padding:5px;border-bottom:1px solid #CBD1DE;color:#5B6479;font-size:10.5px;">الإجمالي</th>
       </tr></thead>
@@ -637,8 +681,10 @@ function buildReviewReportElement(review, items, units, suppliers) {
         ${items.map(i => {
           const c = computeLine(i, units);
           return `<tr>
+            <td style="padding:5px;border-bottom:1px solid #E3E6EC;font-weight:700;">${i.itemName ? escapeHtml(i.itemName) : '—'}</td>
             <td style="padding:5px;border-bottom:1px solid #E3E6EC;font-weight:600;">${fmtInt(c.qty)}</td>
             <td style="padding:5px;border-bottom:1px solid #E3E6EC;font-weight:600;">${escapeHtml(c.unit.label)}</td>
+            <td style="padding:5px;border-bottom:1px solid #E3E6EC;font-weight:600;">${fmtInt(c.actualQty)} قطعة</td>
             <td style="padding:5px;border-bottom:1px solid #E3E6EC;font-weight:600;">${fmtMoney(c.price)}</td>
             <td style="padding:5px;border-bottom:1px solid #E3E6EC;font-weight:700;">${fmtMoney(c.total)}</td>
           </tr>`;
@@ -646,7 +692,7 @@ function buildReviewReportElement(review, items, units, suppliers) {
       </tbody>
     </table>
     <div style="display:flex;justify-content:space-between;margin-top:12px;padding-top:8px;border-top:2px solid #1F2A44;font-weight:900;font-size:14px;">
-      <span>الإجمالي</span><span>${fmtMoney(totalValue)} جنيه</span>
+      <span>إجمالي الكمية: ${fmtInt(totalQty)} قطعة</span><span>الإجمالي: ${fmtMoney(totalValue)} جنيه</span>
     </div>
   `;
   return wrap;

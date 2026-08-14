@@ -7,7 +7,7 @@ import { uid, nowIso, fmtMoney, fmtInt, escapeHtml, fuzzyIncludes, debounce,
 import { logAction } from '../core/audit.js';
 import { navigate } from '../core/router.js';
 import { getSupplierStats, renderReturnsList, createDraftReturn } from './returns.js';
-import { renderSupplierItemsPanel } from './supplier-items.js';
+import { renderSupplierItemsPanel, listBySupplier, deleteSupplierItem } from './supplier-items.js';
 import { autosaveField } from '../core/autosave.js';
 
 const state = { query: '' };
@@ -136,6 +136,7 @@ export async function renderSupplierDetail(container, supplierId) {
       <div class="flex gap-8">
         <button class="btn btn-ghost" id="btn-edit-supplier">تعديل بيانات المورد</button>
         <button class="btn btn-primary" id="btn-new-return-here">+ مرتجعة جديدة</button>
+        <button class="btn btn-danger" id="btn-delete-supplier">حذف المورد</button>
       </div>
     </div>
 
@@ -169,5 +170,23 @@ export async function renderSupplierDetail(container, supplierId) {
   qs('#btn-new-return-here', container).addEventListener('click', async () => {
     const ret = await createDraftReturn(supplierId);
     navigate(`/returns/${ret.id}`);
+  });
+
+  qs('#btn-delete-supplier', container).addEventListener('click', async () => {
+    if (stats.totalCount > 0) {
+      toast(`لا يمكن حذف هذا المورد لأن له ${stats.totalCount} مرتجعة مسجلة (نشطة أو مؤرشفة). لازم تتصرف في المرتجعات دي الأول.`, 'error');
+      return;
+    }
+    const items = await listBySupplier(supplierId);
+    const message = items.length
+      ? `سيتم حذف المورد "${supplier.name}" وكل أصنافه المرتبطة به (${items.length} ${items.length === 1 ? 'صنف' : 'أصناف'}) نهائيًا. هل أنت متأكد؟`
+      : `سيتم حذف المورد "${supplier.name}" نهائيًا. هل أنت متأكد؟`;
+    const ok = await confirmDialog(message, { danger: true, okLabel: 'حذف المورد' });
+    if (!ok) return;
+    for (const item of items) await deleteSupplierItem(item.id);
+    await remove('suppliers', supplierId);
+    await logAction('حذف مورد', 'supplier', supplierId, supplier.name);
+    toast('تم حذف المورد', 'success');
+    navigate('/suppliers');
   });
 }

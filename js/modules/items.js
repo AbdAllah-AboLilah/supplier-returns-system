@@ -9,7 +9,7 @@ import { uid, nowIso, fmtMoney, fmtInt, escapeHtml, debounce, fuzzyIncludes,
 import { logAction } from '../core/audit.js';
 import { navigate } from '../core/router.js';
 import { autosaveField } from '../core/autosave.js';
-import { listErpSupplierRelations } from './item-links.js';
+import { listErpSupplierRelations, unlinkAllSuppliersFromErpItem } from './item-links.js';
 
 const state = { page: 1, pageSize: 50, query: '', category: '', linked: '' };
 
@@ -172,6 +172,23 @@ function openItemForm(container, itemId) {
         <div class="hint">يتم الحفظ تلقائيًا أثناء الكتابة.</div>
       `,
       footerButtons: [
+        ...(isEdit ? [{
+          label: 'حذف الصنف', className: 'btn-danger',
+          onClick: async (c) => {
+            const relations = await listErpSupplierRelations(recordId);
+            const message = relations.length
+              ? `هذا الصنف مرتبط بـ ${relations.length} ${relations.length === 1 ? 'مورد' : 'موردين'}. حذفه هيفك الربط تلقائيًا وهيبقوا "غير مرتبطين" لحد ما تربطهم بصنف تاني. هل تريد المتابعة؟`
+              : `سيتم حذف الصنف "${existing.name}" نهائيًا. هل أنت متأكد؟`;
+            const ok = await confirmDialog(message, { danger: true, okLabel: 'حذف الصنف' });
+            if (!ok) return;
+            if (relations.length) await unlinkAllSuppliersFromErpItem(recordId);
+            await remove('erpItems', recordId);
+            await logAction('حذف صنف', 'erpItem', recordId, existing.name);
+            toast('تم حذف الصنف', 'success');
+            c();
+            renderItemsList(container);
+          },
+        }] : []),
         {
           label: 'إلغاء', className: 'btn-ghost',
           onClick: async (c) => {
