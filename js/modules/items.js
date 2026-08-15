@@ -87,12 +87,15 @@ export async function renderItemsList(container) {
             ? `<button class="btn btn-sm btn-ghost btn-relations" data-id="${i.id}" data-name="${escapeHtml(i.name)}">${fmtInt(linkCountByErp[i.id])} مورد ↗</button>`
             : `<span class="text-dim">0</span>`}
         </td>
-        <td><button class="btn btn-sm btn-ghost btn-edit-item" data-id="${i.id}">تعديل</button></td>
+        <td class="flex gap-8">
+          <button class="btn btn-sm btn-ghost btn-edit-item" data-id="${i.id}">تعديل</button>
+          <button class="btn btn-sm btn-ghost btn-delete-row" data-id="${i.id}" data-name="${escapeHtml(i.name)}">حذف</button>
+        </td>
       </tr>
     `).join('');
     tbody.querySelectorAll('tr.row-link').forEach(row => {
       row.addEventListener('click', (e) => {
-        if (e.target.closest('.btn-edit-item') || e.target.closest('.btn-relations')) return;
+        if (e.target.closest('.btn-edit-item') || e.target.closest('.btn-relations') || e.target.closest('.btn-delete-row')) return;
         openItemForm(container, row.dataset.id);
       });
     });
@@ -101,6 +104,23 @@ export async function renderItemsList(container) {
     });
     tbody.querySelectorAll('.btn-relations').forEach(b => {
       b.addEventListener('click', (e) => { e.stopPropagation(); openRelationsModal(b.dataset.id, b.dataset.name); });
+    });
+    tbody.querySelectorAll('.btn-delete-row').forEach(b => {
+      b.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const itemId = b.dataset.id, itemName = b.dataset.name;
+        const linkedCount = linkCountByErp[itemId] || 0;
+        const message = linkedCount
+          ? `هذا الصنف مرتبط بـ ${linkedCount} ${linkedCount === 1 ? 'مورد' : 'موردين'}. حذفه هيفك الربط تلقائيًا وهيبقوا "غير مرتبطين" لحد ما تربطهم بصنف تاني. هل تريد المتابعة؟`
+          : `سيتم حذف الصنف "${itemName}" نهائيًا. هل أنت متأكد؟`;
+        const ok = await confirmDialog(message, { danger: true, okLabel: 'حذف الصنف' });
+        if (!ok) return;
+        if (linkedCount) await unlinkAllSuppliersFromErpItem(itemId);
+        await remove('erpItems', itemId);
+        await logAction('حذف صنف', 'erpItem', itemId, itemName);
+        toast('تم حذف الصنف', 'success');
+        renderItemsList(container);
+      });
     });
   }
 

@@ -13,7 +13,13 @@ import { autosaveField } from '../core/autosave.js';
 const state = { query: '' };
 
 export async function renderSuppliersList(container) {
-  const all = await getAll('suppliers');
+  const [all, allReturns] = await Promise.all([getAll('suppliers'), getAll('returns')]);
+  // Computed once for the whole list — avoids calling the (expensive,
+  // cloud-round-trip) supplier-stats lookup once per row just to know
+  // whether each one is safe to delete.
+  const returnCountBySupplier = {};
+  allReturns.forEach(r => { returnCountBySupplier[r.supplierId] = (returnCountBySupplier[r.supplierId] || 0) + 1; });
+
   const filtered = all.filter(s => fuzzyIncludes(s.name, state.query)).sort((a, b) => a.name.localeCompare(b.name, 'ar'));
 
   container.innerHTML = `
@@ -42,14 +48,37 @@ export async function renderSuppliersList(container) {
       <tr class="row-link" data-id="${s.id}">
         <td data-label="اسم المورد"><b>${escapeHtml(s.name)}</b></td>
         <td class="text-dim" data-label="جهة الاتصال">${escapeHtml(s.contact || '—')}</td>
-        <td><button class="btn btn-sm btn-ghost btn-edit" data-id="${s.id}">تعديل</button></td>
+        <td class="flex gap-8">
+          <button class="btn btn-sm btn-ghost btn-edit" data-id="${s.id}">تعديل</button>
+          <button class="btn btn-sm btn-ghost btn-delete-row" data-id="${s.id}" data-name="${escapeHtml(s.name)}">حذف</button>
+        </td>
       </tr>
     `).join('');
     tbody.querySelectorAll('tr.row-link').forEach(row => row.addEventListener('click', (e) => {
-      if (e.target.closest('.btn-edit')) return;
+      if (e.target.closest('.btn-edit') || e.target.closest('.btn-delete-row')) return;
       navigate(`/suppliers/${row.dataset.id}`);
     }));
     tbody.querySelectorAll('.btn-edit').forEach(b => b.addEventListener('click', (e) => { e.stopPropagation(); openSupplierForm(container, b.dataset.id); }));
+    tbody.querySelectorAll('.btn-delete-row').forEach(b => b.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const supplierId = b.dataset.id, supplierName = b.dataset.name;
+      const returnCount = returnCountBySupplier[supplierId] || 0;
+      if (returnCount > 0) {
+        toast(`لا يمكن حذف "${supplierName}" لأن له ${returnCount} مرتجعة مسجلة (نشطة أو مؤرشفة). لازم تتصرف في المرتجعات دي الأول.`, 'error');
+        return;
+      }
+      const items = await listBySupplier(supplierId);
+      const message = items.length
+        ? `سيتم حذف المورد "${supplierName}" وكل أصنافه المرتبطة به (${items.length} ${items.length === 1 ? 'صنف' : 'أصناف'}) نهائيًا. هل أنت متأكد؟`
+        : `سيتم حذف المورد "${supplierName}" نهائيًا. هل أنت متأكد؟`;
+      const ok = await confirmDialog(message, { danger: true, okLabel: 'حذف المورد' });
+      if (!ok) return;
+      for (const item of items) await deleteSupplierItem(item.id);
+      await remove('suppliers', supplierId);
+      await logAction('حذف مورد', 'supplier', supplierId, supplierName);
+      toast('تم حذف المورد', 'success');
+      renderSuppliersList(container);
+    }));
   }
 
   qs('#sup-search', container).addEventListener('input', debounce((e) => { state.query = e.target.value; renderSuppliersList(container); }, 200));

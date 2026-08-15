@@ -12,7 +12,7 @@ import { renderDashboard } from './modules/dashboard.js';
 import { renderSuppliersList, renderSupplierDetail } from './modules/suppliers.js';
 import { renderItemsList } from './modules/items.js';
 import { renderExcelImportWizard } from './modules/excel-import.js';
-import { renderUnlinkedView } from './modules/supplier-items.js';
+import { renderUnlinkedView, renderAllSupplierItemsView } from './modules/supplier-items.js';
 import { renderReturnsList, renderReturnDetail } from './modules/returns.js';
 import { renderAuditLogView } from './modules/audit-log.js';
 import { renderSettingsView } from './modules/settings.js';
@@ -29,6 +29,7 @@ registerRoute('/items/import', { navKey: 'items-import', title: 'استيراد 
 registerRoute('/supplier-items/unlinked', { navKey: 'unlinked', title: 'أصناف غير مرتبطة' }, ({ container }) => renderUnlinkedView(container));
 
 registerRoute('/suppliers', { navKey: 'suppliers', title: 'قائمة الموردين' }, ({ container }) => renderSuppliersList(container));
+registerRoute('/supplier-items', { navKey: 'supplier-items-all', title: 'أصناف الموردين' }, ({ container }) => renderAllSupplierItemsView(container));
 registerRoute('/suppliers/:id', { navKey: 'suppliers', title: 'ملف المورد' }, ({ container, params }) => renderSupplierDetail(container, params.id));
 
 registerRoute('/returns/active', { navKey: 'returns-active', title: 'المرتجعات النشطة' }, ({ container }) => renderReturnsList(container, 'active'));

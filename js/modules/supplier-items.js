@@ -359,6 +359,90 @@ async function openHistoryModal(supplierItemId) {
   });
 }
 
+// ---------- UI: all suppliers' items in one screen, grouped by supplier ----------
+
+const allItemsViewState = { query: '' };
+
+export async function renderAllSupplierItemsView(container) {
+  const [supplierItems, suppliers, erpItems] = await Promise.all([getAll('supplierItems'), getAll('suppliers'), getAll('erpItems')]);
+  const erpById = Object.fromEntries(erpItems.map(i => [i.id, i]));
+  const suppliersSorted = [...suppliers].sort((a, b) => a.name.localeCompare(b.name, 'ar'));
+
+  container.innerHTML = `
+    <div class="card">
+      <div class="table-toolbar">
+        <input type="search" id="all-items-search" placeholder="🔎 بحث في اسم المورد أو الصنف" style="max-width:320px;" value="${escapeHtml(allItemsViewState.query)}">
+        <div class="spacer"></div>
+        <span class="small text-dim">${fmtInt(supplierItems.length)} صنف عند ${fmtInt(suppliers.length)} مورد</span>
+      </div>
+    </div>
+    <div id="supplier-groups" class="mt-16"></div>
+  `;
+
+  function renderGroups() {
+    const q = allItemsViewState.query;
+    const groups = suppliersSorted
+      .map(s => ({ supplier: s, items: supplierItems.filter(si => si.supplierId === s.id) }))
+      .map(g => {
+        if (!q || fuzzyIncludes(g.supplier.name, q)) return g; // supplier name matches (or no search) — keep all their items
+        // otherwise narrow down to just the items that themselves match
+        return { ...g, items: g.items.filter(i => fuzzyIncludes(i.supplierItemName, q) || (i.erpItemId && erpById[i.erpItemId] && fuzzyIncludes(erpById[i.erpItemId].name, q))) };
+      })
+      .filter(g => q ? (fuzzyIncludes(g.supplier.name, q) || g.items.length > 0) : g.items.length > 0);
+
+    const groupsWrap = qs('#supplier-groups', container);
+    if (!groups.length) {
+      groupsWrap.innerHTML = `<div class="card"><div class="empty-state"><div class="empty-icon">🔎</div><div class="empty-title">لا توجد نتائج</div></div></div>`;
+      return;
+    }
+
+    groupsWrap.innerHTML = groups.map(g => `
+      <div class="card mb-16">
+        <div class="card-header">
+          <h3><a href="#/suppliers/${g.supplier.id}" style="color:inherit;">${escapeHtml(g.supplier.name)}</a></h3>
+          <span class="small text-dim">${fmtInt(g.items.length)} صنف</span>
+        </div>
+        ${g.items.length ? `
+        <table class="data-table">
+          <thead><tr><th>اسم الصنف عند المورد</th><th>صنف ERP المرتبط</th><th class="num">التكلفة الحالية</th><th></th></tr></thead>
+          <tbody>
+            ${g.items.map(r => `
+              <tr>
+                <td data-label="اسم الصنف عند المورد"><b>${escapeHtml(r.supplierItemName)}</b></td>
+                <td data-label="صنف ERP المرتبط">${r.erpItemId && erpById[r.erpItemId]
+                    ? `<span class="badge badge-erp-yes">${escapeHtml(erpById[r.erpItemId].name)}</span>`
+                    : `<span class="badge badge-warn">⚠️ غير مرتبط</span>`}</td>
+                <td class="num" data-label="التكلفة الحالية">${fmtMoney(r.currentCost)}</td>
+                <td class="flex gap-8">
+                  <button class="btn btn-sm btn-ghost btn-link" data-id="${r.id}">${r.erpItemId ? 'تغيير الربط' : 'ربط'}</button>
+                  <button class="btn btn-sm btn-ghost btn-cost" data-id="${r.id}">التكلفة</button>
+                  <button class="btn btn-sm btn-ghost btn-hist" data-id="${r.id}">السجل</button>
+                  <button class="btn btn-sm btn-ghost btn-del-mapping" data-id="${r.id}" data-name="${escapeHtml(r.supplierItemName)}">حذف</button>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>` : `<div class="empty-state"><div class="empty-hint">لا توجد أصناف مطابقة</div></div>`}
+      </div>
+    `).join('');
+
+    groupsWrap.querySelectorAll('.btn-link').forEach(b => b.addEventListener('click', () => openLinkModal(b.dataset.id, () => renderAllSupplierItemsView(container))));
+    groupsWrap.querySelectorAll('.btn-cost').forEach(b => b.addEventListener('click', () => openCostModal(b.dataset.id, () => renderAllSupplierItemsView(container))));
+    groupsWrap.querySelectorAll('.btn-hist').forEach(b => b.addEventListener('click', () => openHistoryModal(b.dataset.id)));
+    groupsWrap.querySelectorAll('.btn-del-mapping').forEach(b => b.addEventListener('click', async () => {
+      const ok = await confirmDialog(`سيتم حذف "${b.dataset.name}" وسجل تكلفته نهائيًا. المرتجعات السابقة اللي استخدمته مش هتتأثر. هل أنت متأكد؟`, { danger: true, okLabel: 'حذف' });
+      if (!ok) return;
+      await deleteSupplierItem(b.dataset.id);
+      logAction('حذف صنف عند المورد', 'supplierItem', b.dataset.id, b.dataset.name).catch(err => console.error('audit log failed:', err));
+      toast('تم الحذف', 'success');
+      renderAllSupplierItemsView(container);
+    }));
+  }
+
+  renderGroups();
+  qs('#all-items-search', container).addEventListener('input', debounce((e) => { allItemsViewState.query = e.target.value; renderGroups(); }, 200));
+}
+
 // ---------- UI: standalone "unlinked items" route ----------
 
 const unlinkedState = { supplierFilter: '' };
