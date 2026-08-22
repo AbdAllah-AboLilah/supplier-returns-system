@@ -56,7 +56,7 @@ async function renderDashboardContent(container) {
 
   const todays = returns.filter(r => isToday(r.createdAt));
   const editing = returns.filter(r => r.status === 'sent' && r.editingUnlocked);
-  const unregistered = returns.filter(r => r.status === 'sent' && !r.erpRegistered);
+  const unregistered = returns.filter(r => r.status === 'sent' && r.hasCreditLines && !r.erpRegistered);
   const completed = returns.filter(r => r.status === 'closed');
   const recent = [...returns].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1)).slice(0, 8);
 

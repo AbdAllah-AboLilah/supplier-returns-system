@@ -12,7 +12,7 @@ import { uid, nowIso, fmtMoney, fmtDate, fmtInt, escapeHtml, fuzzyIncludes, debo
          openModal, confirmDialog, toast, el, qs, qsa, paginate, renderPagination } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
 import { navigate } from '../core/router.js';
-import { searchSupplierItems, getOrCreateSupplierItem, updateCost as updateSupplierItemCost } from './supplier-items.js';
+import { searchSupplierItems, getOrCreateSupplierItem, updateCost as updateSupplierItemCost, openLinkModal } from './supplier-items.js';
 import { autosaveField } from '../core/autosave.js';
 import { openExportOptionsModal } from './return-export.js';
 
@@ -65,7 +65,9 @@ export async function listReturnsJoined() {
   return returns.map(r => {
     const items = itemsByReturn[r.id] || [];
     const total = items.reduce((s, i) => s + (Number(i.total) || 0), 0);
-    return { ...r, supplierName: supplierById[r.supplierId]?.name || '—', itemCount: items.length, total };
+    const hasCreditLines = items.some(i => i.resolutionType !== 'exchange');
+    const hasExchangeLines = items.some(i => i.resolutionType === 'exchange');
+    return { ...r, supplierName: supplierById[r.supplierId]?.name || '—', itemCount: items.length, total, hasCreditLines, hasExchangeLines };
   });
 }
 
@@ -74,7 +76,7 @@ export async function getSupplierStats(supplierId) {
   const mine = all.filter(r => r.supplierId === supplierId);
   const active = mine.filter(r => r.status !== 'closed');
   const sent = mine.filter(r => r.status === 'sent' || (r.status === 'closed' && r.sentAt));
-  const unregistered = mine.filter(r => r.status === 'sent' && !r.erpRegistered);
+  const unregistered = mine.filter(r => r.status === 'sent' && r.hasCreditLines && !r.erpRegistered);
   return {
     activeCount: active.length,
     activeValue: active.reduce((s, r) => s + r.total, 0),
@@ -134,6 +136,8 @@ export async function addItemLine(returnId, supplierId, supplierItemName, qty, c
     id: uid(), returnId, supplierItemId: si.id, supplierItemName: si.supplierItemName,
     erpItemId: si.erpItemId || null, erpItemName, qty: quantity, unitCost, total: quantity * unitCost,
     costIsFallback: isFallback,
+    resolutionType: 'credit', // 'credit' (needs ERP registration) or 'exchange' (supplier replaces with sound goods — never goes to ERP)
+    replacementReceived: false, replacementReceivedAt: null,
     createdAt: nowIso(),
   };
   await put('returnItems', line);
@@ -164,6 +168,39 @@ export async function updateLine(lineId, { qty, unitCost }) {
   // a cosmetic "last modified" timestamp bump on the parent return.
   getById('returns', line.returnId).then(ret => { if (ret) touchReturn(ret); }).catch(err => console.error('touchReturn failed:', err));
   return line;
+}
+
+// ---------- Per-line resolution: credit (goes to ERP) vs exchange
+// (supplier swaps for sound goods — never touches ERP, just tracked
+// until the replacement physically arrives) ----------
+
+export async function setLineResolutionType(lineId, resolutionType) {
+  const line = await getById('returnItems', lineId);
+  line.resolutionType = resolutionType;
+  if (resolutionType !== 'exchange') { line.replacementReceived = false; line.replacementReceivedAt = null; }
+  await put('returnItems', line);
+  return line;
+}
+
+export async function setLineReplacementReceived(lineId, received) {
+  const line = await getById('returnItems', lineId);
+  line.replacementReceived = received;
+  line.replacementReceivedAt = received ? nowIso() : null;
+  await put('returnItems', line);
+  await logAction(received ? 'استلام بديل صنف' : 'إلغاء استلام بديل صنف', 'return', line.returnId, line.supplierItemName);
+  return line;
+}
+
+export async function markAllReplacementsReceived(returnId) {
+  const lines = await getReturnItems(returnId);
+  const toMark = lines.filter(l => l.resolutionType === 'exchange' && !l.replacementReceived);
+  for (const l of toMark) {
+    l.replacementReceived = true;
+    l.replacementReceivedAt = nowIso();
+    await put('returnItems', l);
+  }
+  if (toMark.length) await logAction('استلام كل بدائل المرتجعة', 'return', returnId, `${toMark.length} صنف`);
+  return toMark.length;
 }
 
 export async function removeLine(lineId) {
@@ -255,7 +292,9 @@ function applyFilter(rows, key) {
   switch (key) {
     case 'active': return rows.filter(r => r.status !== 'closed');
     case 'sent': return rows.filter(r => r.status === 'sent');
-    case 'unregistered': return rows.filter(r => r.status === 'sent' && !r.erpRegistered);
+    // Only flag as "unregistered" if there's actually a credit portion
+    // waiting on ERP — a pure-exchange return will never need this.
+    case 'unregistered': return rows.filter(r => r.status === 'sent' && r.hasCreditLines && !r.erpRegistered);
     case 'archive': return rows.filter(r => r.status === 'closed');
     default: return rows;
   }
@@ -268,7 +307,9 @@ function statusBadge(r) {
   return `<span class="badge badge-draft">مسودة</span>`;
 }
 function erpBadge(r) {
-  if (r.status !== 'sent' && !r.erpRegistered) return `<span class="text-dim small">—</span>`;
+  if (r.status !== 'sent') return `<span class="text-dim small">—</span>`;
+  if (!r.hasCreditLines && r.hasExchangeLines) return `<span class="badge badge-warn">🔄 استبدال</span>`;
+  if (!r.hasCreditLines) return `<span class="text-dim small">—</span>`;
   return r.erpRegistered ? `<span class="badge badge-erp-yes">🟢 مسجلة</span>` : `<span class="badge badge-erp-no">🔴 غير مسجلة</span>`;
 }
 
@@ -383,6 +424,9 @@ export async function renderReturnDetail(container, returnId) {
   const totalQty = lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
   const totalValue = lines.reduce((s, l) => s + (Number(l.total) || 0), 0);
   const editable = ret.status === 'draft' || ret.editingUnlocked;
+  const exchangeLines = lines.filter(l => l.resolutionType === 'exchange');
+  const creditLines = lines.filter(l => l.resolutionType !== 'exchange');
+  const exchangeReceivedCount = exchangeLines.filter(l => l.replacementReceived).length;
 
   container.innerHTML = `
     <div class="flex items-center justify-between mb-16" style="flex-wrap:wrap;gap:10px;">
@@ -423,29 +467,40 @@ export async function renderReturnDetail(container, returnId) {
       ${lines.length ? `
       <table class="data-table">
         <thead><tr>
-          <th>اسم الصنف عند المورد</th><th>صنف النظام ERP</th><th class="num">الكمية</th><th class="num">تكلفة المورد</th><th class="num">الإجمالي</th>${editable ? '<th></th>' : ''}
+          <th>اسم الصنف عند المورد</th><th>صنف النظام ERP</th><th class="num">الكمية</th><th class="num">تكلفة المورد</th><th class="num">الإجمالي</th><th>نوع المعالجة</th>${editable ? '<th></th>' : ''}
         </tr></thead>
         <tbody>
           ${lines.map(l => `
             <tr data-line="${l.id}">
               <td data-label="اسم الصنف عند المورد"><b>${escapeHtml(l.supplierItemName)}</b></td>
-              <td data-label="صنف النظام ERP">${l.erpItemName ? escapeHtml(l.erpItemName) : `<span class="badge badge-warn">⚠️ غير مرتبط</span>`}</td>
+              <td data-label="صنف النظام ERP">${l.erpItemName ? escapeHtml(l.erpItemName) : `<span class="badge badge-warn">⚠️ غير مرتبط</span> <button class="btn btn-sm btn-ghost btn-link-erp" data-supplier-item-id="${l.supplierItemId}">ربط</button>`}</td>
               <td class="num" data-label="الكمية">${editable ? `<input type="number" min="0" step="1" class="line-qty" data-id="${l.id}" value="${l.qty}" style="width:80px;text-align:center;">` : fmtInt(l.qty)}</td>
               <td class="num" data-label="تكلفة المورد">${editable
                 ? `<input type="number" min="0" step="0.01" class="line-cost ${l.costIsFallback ? 'cost-fallback' : ''}" data-id="${l.id}" value="${l.unitCost}" title="${l.costIsFallback ? 'تكلفة النظام الافتراضية — لسه محدّدتش تكلفة هذا المورد الفعلية' : ''}" style="width:100px;text-align:center;">`
                 : `<span class="${l.costIsFallback ? 'cost-fallback-text' : ''}" title="${l.costIsFallback ? 'تكلفة النظام الافتراضية — لسه محدّدتش تكلفة هذا المورد الفعلية' : ''}">${fmtMoney(l.unitCost)}</span>`}</td>
               <td class="num text-mono" id="line-total-${l.id}" data-label="الإجمالي">${fmtMoney(l.total)}</td>
+              <td data-label="نوع المعالجة">
+                <select class="line-resolution" data-id="${l.id}" ${editable ? '' : 'disabled'}>
+                  <option value="credit" ${l.resolutionType !== 'exchange' ? 'selected' : ''}>دائن</option>
+                  <option value="exchange" ${l.resolutionType === 'exchange' ? 'selected' : ''}>استبدال</option>
+                </select>
+                ${l.resolutionType === 'exchange' ? (l.replacementReceived
+                    ? `<div class="mt-8"><span class="badge badge-erp-yes">✅ تم الاستلام</span></div>`
+                    : `<div class="mt-8"><button class="btn btn-sm btn-ghost line-toggle-received" data-id="${l.id}">⏳ لسه — دوس لما تستلم</button></div>`
+                  ) : ''}
+              </td>
               ${editable ? `<td><button class="btn btn-sm btn-ghost line-remove" data-id="${l.id}">حذف</button></td>` : ''}
             </tr>
           `).join('')}
         </tbody>
         <tfoot>
-          ${lines.some(l => l.costIsFallback) ? `<tr><td colspan="${editable ? 6 : 5}" style="padding-top:6px;"><span class="small" style="color:var(--red);">🔴 التكلفة باللون الأحمر هي تكلفة النظام الافتراضية — راجعها وأكّدها أو عدّلها لو مختلفة عن تكلفة المورد الفعلية.</span></td></tr>` : ''}
+          ${lines.some(l => l.costIsFallback) ? `<tr><td colspan="${editable ? 7 : 6}" style="padding-top:6px;"><span class="small" style="color:var(--red);">🔴 التكلفة باللون الأحمر هي تكلفة النظام الافتراضية — راجعها وأكّدها أو عدّلها لو مختلفة عن تكلفة المورد الفعلية.</span></td></tr>` : ''}
           <tr>
             <td colspan="2"><b>الإجمالي</b></td>
             <td class="num text-mono" id="footer-total-qty" data-label="إجمالي الكمية">${fmtInt(totalQty)}</td>
             <td></td>
             <td class="num text-mono" id="footer-total-value" data-label="الإجمالي"><b>${fmtMoney(totalValue)}</b></td>
+            <td></td>
             ${editable ? '<td></td>' : ''}
           </tr>
         </tfoot>
@@ -480,12 +535,18 @@ export async function renderReturnDetail(container, returnId) {
 
     <div class="card card-pad flex items-center justify-between" style="flex-wrap:wrap;gap:12px;">
       <div class="flex items-center gap-12" style="flex-wrap:wrap;">
-        ${ret.status === 'sent' ? `
+        ${ret.status === 'sent' && creditLines.length ? `
           ${ret.erpRegistered
             ? `<span class="badge badge-erp-yes">🟢 مسجلة على ERP${ret.erpTransactionNumber ? ` — رقم الحركة: <span class="text-mono">${escapeHtml(ret.erpTransactionNumber)}</span>` : ''}</span>
                <button class="btn btn-sm btn-ghost" id="btn-unerp">إلغاء التسجيل</button>`
             : `<span class="badge badge-erp-no">🔴 لم تُسجل على ERP بعد</span>
                <button class="btn btn-sm btn-gold" id="btn-erp">✓ تم التسجيل على ERP</button>`}
+        ` : ''}
+        ${ret.status === 'sent' && exchangeLines.length ? `
+          <span class="badge ${exchangeReceivedCount === exchangeLines.length ? 'badge-erp-yes' : 'badge-warn'}">
+            🔄 بدائل مستلمة: ${exchangeReceivedCount} / ${exchangeLines.length}
+          </span>
+          ${exchangeReceivedCount < exchangeLines.length ? `<button class="btn btn-sm btn-gold" id="btn-receive-all">✓ تم استلام كل البدائل</button>` : ''}
         ` : ''}
       </div>
       <div class="flex gap-8">
@@ -542,6 +603,12 @@ function wireDetailEvents(container, ret, lines, supplier) {
     navigate('/returns/active');
   });
 
+  // Link straight from the return — no need to leave and go find this
+  // item in the supplier's item list just to fix the ERP mapping.
+  qsa('.btn-link-erp', container).forEach(b => b.addEventListener('click', () => {
+    openLinkModal(b.dataset.supplierItemId, () => renderReturnDetail(container, ret.id));
+  }));
+
   qs('#btn-unlock', container)?.addEventListener('click', async () => {
     if (!(await confirmDialog('هل تريد فتح المرتجعة للتعديل؟ سيبقى تاريخ الإرسال الأصلي محفوظًا.'))) return;
     await unlockForEditing(ret.id);
@@ -565,6 +632,15 @@ function wireDetailEvents(container, ret, lines, supplier) {
   }, { delay: 500 }));
   qsa('.line-remove', container).forEach(b => b.addEventListener('click', async () => {
     await removeLine(b.dataset.id);
+    renderReturnDetail(container, ret.id);
+  }));
+  qsa('.line-resolution', container).forEach(sel => sel.addEventListener('change', async () => {
+    await setLineResolutionType(sel.dataset.id, sel.value);
+    renderReturnDetail(container, ret.id);
+  }));
+  qsa('.line-toggle-received', container).forEach(b => b.addEventListener('click', async () => {
+    await setLineReplacementReceived(b.dataset.id, true);
+    toast('تم تسجيل استلام البديل', 'success');
     renderReturnDetail(container, ret.id);
   }));
 
@@ -687,6 +763,12 @@ function wireDetailEvents(container, ret, lines, supplier) {
   qs('#btn-unerp', container)?.addEventListener('click', async () => {
     if (!(await confirmDialog('هل تريد إلغاء تعليم هذه المرتجعة كمسجلة على ERP؟'))) return;
     await unmarkErpRegistered(ret.id);
+    renderReturnDetail(container, ret.id);
+  });
+
+  qs('#btn-receive-all', container)?.addEventListener('click', async () => {
+    const n = await markAllReplacementsReceived(ret.id);
+    if (n) toast(`تم تسجيل استلام ${n} صنف`, 'success');
     renderReturnDetail(container, ret.id);
   });
 

@@ -7,5 +7,5 @@
 // keeping this file, /version.json, and the cache name in sw.js
 // all in sync.
 // =========================================================
-export const APP_VERSION = '1.15.0';
-export const BUILD_DATE = '2026-08-15';
+export const APP_VERSION = '1.16.0';
+export const BUILD_DATE = '2026-08-16';

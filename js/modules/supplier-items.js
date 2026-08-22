@@ -10,7 +10,7 @@
 //                     with even after the price changes.
 // =========================================================
 import { getAll, getById, getByIndex, put, remove, removeWhere } from '../core/db.js';
-import { uid, nowIso, fmtMoney, fmtDate, escapeHtml, fuzzyIncludes, normalizeArabic, debounce,
+import { uid, nowIso, fmtMoney, fmtInt, fmtDate, escapeHtml, fuzzyIncludes, normalizeArabic, debounce,
          openModal, confirmDialog, toast, el, qs, qsa } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
 import { findErpItems } from './item-links.js';
@@ -300,7 +300,7 @@ function openAddMappingModal(supplierId, onDone) {
   nameInput.focus();
 }
 
-function openLinkModal(supplierItemId, onDone) {
+export function openLinkModal(supplierItemId, onDone) {
   const { close, node } = openModal({
     title: 'ربط بصنف نظام ERP',
     bodyHtml: `
@@ -400,7 +400,10 @@ export async function renderAllSupplierItemsView(container) {
       <div class="card mb-16">
         <div class="card-header">
           <h3><a href="#/suppliers/${g.supplier.id}" style="color:inherit;">${escapeHtml(g.supplier.name)}</a></h3>
-          <span class="small text-dim">${fmtInt(g.items.length)} صنف</span>
+          <div class="flex items-center gap-8">
+            <span class="small text-dim">${fmtInt(g.items.length)} صنف</span>
+            <button class="btn btn-sm btn-primary btn-add-for-supplier" data-supplier-id="${g.supplier.id}">+ إضافة صنف</button>
+          </div>
         </div>
         ${g.items.length ? `
         <table class="data-table">
@@ -426,6 +429,7 @@ export async function renderAllSupplierItemsView(container) {
       </div>
     `).join('');
 
+    groupsWrap.querySelectorAll('.btn-add-for-supplier').forEach(b => b.addEventListener('click', () => openAddMappingModal(b.dataset.supplierId, () => renderAllSupplierItemsView(container))));
     groupsWrap.querySelectorAll('.btn-link').forEach(b => b.addEventListener('click', () => openLinkModal(b.dataset.id, () => renderAllSupplierItemsView(container))));
     groupsWrap.querySelectorAll('.btn-cost').forEach(b => b.addEventListener('click', () => openCostModal(b.dataset.id, () => renderAllSupplierItemsView(container))));
     groupsWrap.querySelectorAll('.btn-hist').forEach(b => b.addEventListener('click', () => openHistoryModal(b.dataset.id)));
