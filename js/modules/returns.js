@@ -515,7 +515,7 @@ export async function renderReturnDetail(container, returnId) {
             <input type="text" id="add-item-name" placeholder="ابدأ الكتابة...">
             <div class="autocomplete-list" id="add-item-results" style="display:none;"></div>
           </div>
-          <div class="field" style="flex:0 0 90px;"><label>الكمية</label><input type="number" id="add-item-qty" value="1" min="1"></div>
+          <div class="field" style="flex:0 0 90px;"><label>الكمية</label><input type="number" id="add-item-qty" placeholder="0" min="1"></div>
           <div class="field" style="flex:0 0 60px;"><label title="ق = سعر القطعة، د = سعر الدستة (هيتحول لسعر القطعة تلقائيًا)">الوحدة</label>
             <select id="add-item-unit-type">
               <option value="piece">ق</option>
@@ -686,7 +686,10 @@ function wireDetailEvents(container, ret, lines, supplier) {
             if (unitTypeEl) unitTypeEl.value = 'piece';
           }
           resultsBox.style.display = 'none';
-          costInput?.focus();
+          // The name and (if known) cost are already filled in — the
+          // one thing still missing every time is the quantity, so
+          // that's where attention should land, not on cost.
+          qs('#add-item-qty', container)?.focus();
         });
       });
     }, 200));
@@ -718,6 +721,7 @@ function wireDetailEvents(container, ret, lines, supplier) {
       cost = String((Number(cost) || 0) / 12);
     }
     if (!name) { toast('اكتب اسم الصنف أولًا', 'error'); return; }
+    if (!qty || Number(qty) <= 0) { toast('اكتب الكمية أولًا', 'error'); qs('#add-item-qty', container)?.focus(); return; }
 
     const originalLabel = btn.textContent;
     btn.disabled = true;
