@@ -9,7 +9,7 @@
 // "auto-update" actually work); when offline you fall back to
 // whatever was last cached.
 // =========================================================
-const CACHE_NAME = 'returns-system-v1.16.1';
+const CACHE_NAME = 'returns-system-v1.17.0';
 const APP_SHELL = [
   './',
   './index.html',
@@ -22,7 +22,6 @@ const APP_SHELL = [
   './js/core/router.js',
   './js/core/version.js',
   './js/core/autosave.js',
-  './js/core/brand.js',
   './js/core/sync-status.js',
   './js/core/firebase-init.js',
   './js/core/migrate-to-firebase.js',

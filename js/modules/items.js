@@ -3,11 +3,11 @@
 // The base item catalog. Item identity is the generated `id`
 // (never the name) so renames never break links from suppliers.
 // =========================================================
-import { getAll, getById, put, remove, getByIndex } from '../core/db.js';
+import { getAll, getById, put, remove } from '../core/db.js';
 import { uid, nowIso, fmtMoney, fmtInt, escapeHtml, debounce, fuzzyIncludes,
-         openModal, confirmDialog, toast, paginate, renderPagination, el, qs } from '../core/utils.js';
+         openModal, confirmDialog, toast, paginate, renderPagination, qs,
+         renderPreservingFocus, guarded } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
-import { navigate } from '../core/router.js';
 import { autosaveField } from '../core/autosave.js';
 import { listErpSupplierRelations, unlinkAllSuppliersFromErpItem } from './item-links.js';
 
@@ -33,7 +33,7 @@ export async function renderItemsList(container) {
 
   const hasActiveFilters = !!(state.category || state.linked);
 
-  container.innerHTML = `
+  renderPreservingFocus(container, `
     <div class="card">
       <div class="table-toolbar">
         <input type="search" id="items-search" placeholder="🔎 بحث بالاسم أو الباركود" style="max-width:280px;" value="${escapeHtml(state.query)}">
@@ -72,7 +72,7 @@ export async function renderItemsList(container) {
       </div>`}
       <div id="items-pagination"></div>
     </div>
-  `;
+  `);
 
   const { slice, totalPages, page, total } = paginate(filtered, state.page, state.pageSize);
   const tbody = qs('#items-tbody', container);
@@ -106,7 +106,7 @@ export async function renderItemsList(container) {
       b.addEventListener('click', (e) => { e.stopPropagation(); openRelationsModal(b.dataset.id, b.dataset.name); });
     });
     tbody.querySelectorAll('.btn-delete-row').forEach(b => {
-      b.addEventListener('click', async (e) => {
+      b.addEventListener('click', guarded(async (e) => {
         e.stopPropagation();
         const itemId = b.dataset.id, itemName = b.dataset.name;
         const linkedCount = linkCountByErp[itemId] || 0;
@@ -120,7 +120,7 @@ export async function renderItemsList(container) {
         await logAction('حذف صنف', 'erpItem', itemId, itemName);
         toast('تم حذف الصنف', 'success');
         renderItemsList(container);
-      });
+      }));
     });
   }
 

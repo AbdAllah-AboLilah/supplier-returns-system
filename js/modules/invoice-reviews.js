@@ -14,7 +14,8 @@
 // =========================================================
 import { getAll, getById, put, remove, getByIndex, removeWhere, getSetting, setSetting, nextSequence } from '../core/db.js';
 import { uid, nowIso, fmtMoney, fmtInt, fmtDate, escapeHtml, fuzzyIncludes, debounce,
-         openModal, confirmDialog, toast, paginate, renderPagination, qs, qsa } from '../core/utils.js';
+         openModal, confirmDialog, toast, paginate, renderPagination, qs, qsa,
+         renderPreservingFocus, guarded, closeOnOutsideClick } from '../core/utils.js';
 import { autosaveField } from '../core/autosave.js';
 import { navigate } from '../core/router.js';
 import { openSupplierForm } from './suppliers.js';
@@ -134,8 +135,12 @@ export async function createDraftReview() {
 
 async function touch(review) { review.updatedAt = nowIso(); await put('invoiceReviews', review); }
 
+const MISSING_REVIEW = 'المراجعة دي مش موجودة — يمكن تكون اتحذفت من جهاز تاني.';
+const MISSING_LINE = 'الصنف ده مش موجود في المراجعة — جرّب تحدّث الصفحة.';
+
 export async function updateReviewMeta(reviewId, patch) {
   const review = await getById('invoiceReviews', reviewId);
+  if (!review) throw new Error(MISSING_REVIEW);
   Object.assign(review, patch);
   await touch(review);
   return review;
@@ -143,6 +148,7 @@ export async function updateReviewMeta(reviewId, patch) {
 
 export async function toggleErpEntered(reviewId, entered) {
   const review = await getById('invoiceReviews', reviewId);
+  if (!review) throw new Error(MISSING_REVIEW);
   review.erpEntered = entered;
   review.erpEnteredAt = entered ? nowIso() : null;
   await touch(review);
@@ -169,6 +175,7 @@ export async function addReviewItem(reviewId, { itemName, erpItemId, qty, unitKe
 
 export async function updateReviewItem(lineId, patch) {
   const line = await getById('invoiceReviewItems', lineId);
+  if (!line) throw new Error(MISSING_LINE);
   Object.assign(line, patch);
   await put('invoiceReviewItems', line);
   return line;
@@ -176,6 +183,7 @@ export async function updateReviewItem(lineId, patch) {
 
 export async function removeReviewItem(lineId) {
   const line = await getById('invoiceReviewItems', lineId);
+  if (!line) throw new Error(MISSING_LINE);
   await remove('invoiceReviewItems', lineId);
   getById('invoiceReviews', line.reviewId).then(r => { if (r) touch(r); });
 }
@@ -228,7 +236,9 @@ export async function renderInvoiceReviewsList(container) {
   rows = rows.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
   const hasActiveFilters = !!(listState.erpFilter || listState.supplierFilter);
 
-  container.innerHTML = `
+  const { slice, totalPages, page, total } = paginate(rows, listState.page, listState.pageSize);
+
+  renderPreservingFocus(container, `
     <div class="card">
       <div class="table-toolbar">
         <input type="search" id="inv-search" placeholder="🔎 رقم المراجعة، رقم الفاتورة، أو المورد" style="max-width:280px;" value="${escapeHtml(listState.query)}">
@@ -250,13 +260,13 @@ export async function renderInvoiceReviewsList(container) {
         </select>
         ${hasActiveFilters ? `<button class="btn btn-sm btn-ghost filter-clear" id="btn-clear-filters">✕ مسح الفلاتر</button>` : ''}
       </div>
-      ${rows.length ? `
+      ${slice.length ? `
       <table class="data-table">
         <thead><tr>
           <th>رقم المراجعة</th><th>رقم الفاتورة</th><th>المورد</th><th class="num">عدد الأصناف</th><th class="num">الإجمالي</th><th>ERP</th><th>التاريخ</th>
         </tr></thead>
         <tbody>
-          ${rows.map(r => `
+          ${slice.map(r => `
             <tr class="row-link" data-id="${r.id}">
               <td class="text-mono" data-label="رقم المراجعة">${escapeHtml(r.reviewNumber)}</td>
               <td class="text-dim" data-label="رقم الفاتورة">${escapeHtml(r.invoiceNumber || '—')}</td>
@@ -274,19 +284,40 @@ export async function renderInvoiceReviewsList(container) {
         <div class="empty-title">لا توجد مراجعات فواتير بعد</div>
         <div class="empty-hint">${hasActiveFilters ? 'جرّب توسيع نطاق الفلاتر' : 'ابدأ مراجعة جديدة لحظة ما تكون مع المورد'}</div>
       </div>`}
+      <div id="inv-pagination"></div>
     </div>
-  `;
+  `);
+
+  const pagWrap = qs('#inv-pagination', container);
+  if (pagWrap && total > 0) {
+    pagWrap.appendChild(renderPagination({
+      page, totalPages, total, pageSize: listState.pageSize,
+      onPage: (p) => { listState.page = p; renderInvoiceReviewsList(container); },
+      onPageSize: (sz) => { listState.pageSize = sz; listState.page = 1; renderInvoiceReviewsList(container); },
+    }));
+  }
 
   container.querySelectorAll('tr.row-link').forEach(row => row.addEventListener('click', () => navigate(`/invoice-reviews/${row.dataset.id}`)));
-  qs('#inv-search', container).addEventListener('input', debounce((e) => { listState.query = e.target.value; renderInvoiceReviewsList(container); }, 200));
-  qs('#inv-supplier-filter', container).addEventListener('change', (e) => { listState.supplierFilter = e.target.value; renderInvoiceReviewsList(container); });
-  qs('#inv-erp-filter', container).addEventListener('change', (e) => { listState.erpFilter = e.target.value; renderInvoiceReviewsList(container); });
-  qs('#btn-clear-filters', container)?.addEventListener('click', () => { listState.erpFilter = ''; listState.supplierFilter = ''; renderInvoiceReviewsList(container); });
+  qs('#inv-search', container).addEventListener('input', debounce((e) => { listState.query = e.target.value; listState.page = 1; renderInvoiceReviewsList(container); }, 200));
+  qs('#inv-supplier-filter', container).addEventListener('change', (e) => { listState.supplierFilter = e.target.value; listState.page = 1; renderInvoiceReviewsList(container); });
+  qs('#inv-erp-filter', container).addEventListener('change', (e) => { listState.erpFilter = e.target.value; listState.page = 1; renderInvoiceReviewsList(container); });
+  qs('#btn-clear-filters', container)?.addEventListener('click', () => { listState.erpFilter = ''; listState.supplierFilter = ''; listState.page = 1; renderInvoiceReviewsList(container); });
   qs('#btn-num-converter', container).addEventListener('click', () => openNumberConverterModal());
-  qs('#btn-new-review', container).addEventListener('click', async () => {
-    const review = await createDraftReview();
-    navigate(`/invoice-reviews/${review.id}`);
-  });
+  qs('#btn-new-review', container).addEventListener('click', guarded(async (e) => {
+    const btn = e.currentTarget;
+    if (btn.disabled) return; // a reserved review number is a network round trip — don't let a double click burn two
+    btn.disabled = true;
+    const originalLabel = btn.textContent;
+    btn.textContent = 'جارِ الإنشاء...';
+    try {
+      const review = await createDraftReview();
+      navigate(`/invoice-reviews/${review.id}`);
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = originalLabel;
+      throw err;
+    }
+  }, 'تعذّر إنشاء المراجعة — إنشاء رقم جديد محتاج إنترنت.'));
 }
 
 // ---------- UI: detail ----------
@@ -425,21 +456,26 @@ function renderPhotoArea(container, review) {
   });
 }
 
+// Same as the return screen: this view re-renders after every edit, so
+// the outside-click listener is replaced rather than stacked.
+let disposeOutsideClick = null;
+
 function wireDetailEvents(container, review, items, units, suppliers) {
-  qs('#btn-delete-review', container).addEventListener('click', async () => {
+  if (disposeOutsideClick) { disposeOutsideClick(); disposeOutsideClick = null; }
+  qs('#btn-delete-review', container).addEventListener('click', guarded(async () => {
     if (!(await confirmDialog(`سيتم حذف المراجعة ${review.reviewNumber} نهائيًا. هل أنت متأكد؟`, { danger: true }))) return;
     await deleteReview(review.id);
     toast('تم الحذف', 'success');
     navigate('/invoice-reviews');
-  });
+  }));
 
   const supplierSelect = qs('#f-supplier', container);
-  supplierSelect.addEventListener('change', async () => {
+  supplierSelect.addEventListener('change', guarded(async () => {
     const supplierId = supplierSelect.value || null;
     const supplierName = supplierId ? (suppliers.find(s => s.id === supplierId)?.name || '') : '';
     await updateReviewMeta(review.id, { supplierId, supplierName });
     toast('تم الحفظ', 'success');
-  });
+  }));
   qs('#btn-new-supplier', container).addEventListener('click', (e) => {
     e.preventDefault();
     openSupplierForm(container, null, async (savedSupplier) => {
@@ -471,10 +507,10 @@ function wireDetailEvents(container, review, items, units, suppliers) {
     e.target.value = '';
   });
 
-  qs('#btn-erp-toggle', container).addEventListener('click', async () => {
+  qs('#btn-erp-toggle', container).addEventListener('click', guarded(async () => {
     await toggleErpEntered(review.id, !review.erpEntered);
     renderInvoiceReviewDetail(container, review.id);
-  });
+  }));
 
   qsa('.ln-qty', container).forEach(inp => autosaveField(inp, async (val) => {
     await updateReviewItem(inp.dataset.id, { qty: Number(val) || 0 });
@@ -488,10 +524,10 @@ function wireDetailEvents(container, review, items, units, suppliers) {
     await updateReviewItem(sel.dataset.id, { unitKey: sel.value });
     recalcLine(container, sel.dataset.id, units);
   }));
-  qsa('.ln-remove', container).forEach(b => b.addEventListener('click', async () => {
+  qsa('.ln-remove', container).forEach(b => b.addEventListener('click', guarded(async () => {
     await removeReviewItem(b.dataset.id);
     renderInvoiceReviewDetail(container, review.id);
-  }));
+  })));
 
   qs('#btn-manage-units', container).addEventListener('click', (e) => { e.preventDefault(); openUnitsManagerModal(() => renderInvoiceReviewDetail(container, review.id)); });
 
@@ -517,9 +553,9 @@ function wireDetailEvents(container, review, items, units, suppliers) {
       });
     });
   }, 200));
-  document.addEventListener('click', (e) => { if (!e.target.closest('.autocomplete')) erpResultsBox.style.display = 'none'; }, { once: true });
+  disposeOutsideClick = closeOnOutsideClick(erpResultsBox);
 
-  qs('#btn-add-line', container).addEventListener('click', async () => {
+  qs('#btn-add-line', container).addEventListener('click', guarded(async () => {
     const itemName = itemNameInput.value.trim();
     const erpItemId = itemNameInput.dataset.erpId || null;
     const qty = qs('#add-qty', container).value;
@@ -531,7 +567,7 @@ function wireDetailEvents(container, review, items, units, suppliers) {
     await renderInvoiceReviewDetail(container, review.id);
     qs('#add-unit', container).value = lastUnit;
     qs('#add-item-name', container)?.focus();
-  });
+  }));
 
   qs('#btn-copy', container).addEventListener('click', () => copyReviewText(review, items, units, suppliers));
   qs('#btn-img', container).addEventListener('click', () => downloadReviewImage(review, items, units, suppliers));
@@ -549,7 +585,9 @@ function recalcLine(container, lineId, units) {
   const actualQty = qty * (unit?.multiplier || 1);
   const total = qty * price;
   const actualCell = qs(`#ln-actual-${lineId}`, container);
-  if (actualCell) actualCell.textContent = fmtInt(actualQty);
+  // Keep the unit word — the initial render has it, so without it the
+  // cell silently lost "قطعة" the moment you edited the row.
+  if (actualCell) actualCell.textContent = `${fmtInt(actualQty)} قطعة`;
   const totalCell = qs(`#ln-total-${lineId}`, container);
   if (totalCell) totalCell.textContent = fmtMoney(total);
 
@@ -562,7 +600,7 @@ function recalcLine(container, lineId, units) {
     totalQty += q * (u?.multiplier || 1);
     totalValue += q * p;
   });
-  const fq = qs('#footer-qty', container); if (fq) fq.textContent = fmtInt(totalQty);
+  const fq = qs('#footer-qty', container); if (fq) fq.textContent = `${fmtInt(totalQty)} قطعة`;
   const fv = qs('#footer-total', container); if (fv) fv.innerHTML = `<b>${fmtMoney(totalValue)}</b>`;
 }
 

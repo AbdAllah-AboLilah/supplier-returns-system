@@ -5,12 +5,10 @@
 //   'syncing'  (yellow) — a write is currently going out
 //   'offline'  (red)    — no internet; changes are only local
 //
-// Today this only tracks real connectivity (navigator.onLine +
-// online/offline events), because there is no cloud write yet
-// to be "syncing". Once the Firestore layer lands, it will wrap
-// its writes in beginSyncOperation()/endSyncOperation() and the
-// yellow state will start lighting up for real — nothing else
-// about this module needs to change.
+// core/db.js wraps every write in beginSyncOperation() /
+// endSyncOperation(), so the yellow state reflects real pending
+// cloud writes; red comes from the browser's own online/offline
+// events (navigator.onLine).
 // =========================================================
 
 let currentStatus = navigator.onLine ? 'online' : 'offline';
