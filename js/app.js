@@ -17,7 +17,6 @@ import { renderReturnsList, renderReturnDetail } from './modules/returns.js';
 import { renderAuditLogView } from './modules/audit-log.js';
 import { renderSettingsView } from './modules/settings.js';
 import { renderInvoiceReviewsList, renderInvoiceReviewDetail } from './modules/invoice-reviews.js';
-import { applyShopName } from './core/brand.js';
 import { migrateLocalDataToFirebaseIfNeeded } from './core/migrate-to-firebase.js';
 
 // ---------- Route table ----------
@@ -71,7 +70,6 @@ qs('#app-content').innerHTML = '<div class="empty-state"><div class="empty-icon"
     // normally; individual screens will surface their own errors.
   }
   initRouter(qs('#app-content'), onNavigate);
-  applyShopName();
 })();
 
 // ---------- Mobile nav toggle ----------

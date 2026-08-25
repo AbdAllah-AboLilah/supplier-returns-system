@@ -3,15 +3,15 @@
 // Two things live here for now:
 //   1. Shop name — a plain, always-editable setting, not baked
 //      into the code, shown in the sidebar and on exported reports.
-//   2. Full backup / restore — every store in one JSON file, so
-//      you can carry your data to another device by hand until
-//      real cloud sync is wired in.
+//   2. Full backup / restore — every collection in one JSON file.
+//      Data already syncs across devices through Firestore; this is
+//      the offline archive/rollback copy, and the way to move a
+//      dataset into a different Firebase project.
 // =========================================================
 import { getAll, getSetting, setSetting, exportAllData, importAllData } from '../core/db.js';
-import { fmtInt, fmtDate, escapeHtml, openModal, confirmDialog, toast, qs } from '../core/utils.js';
+import { fmtInt, fmtDate, escapeHtml, confirmDialog, toast, qs } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
 import { autosaveField } from '../core/autosave.js';
-import { applyShopName } from '../core/brand.js';
 import { APP_VERSION, BUILD_DATE } from '../core/version.js';
 
 export async function renderSettingsView(container) {
@@ -23,7 +23,7 @@ export async function renderSettingsView(container) {
   container.innerHTML = `
     <div class="card card-pad mb-16">
       <div class="section-title">اسم المحل</div>
-      <div class="field-label-row"><label style="margin:0;">هيظهر في الشريط الجانبي وفي التقارير المُصدَّرة</label><span class="autosave-status" id="shop-status"></span></div>
+      <div class="field-label-row"><label style="margin:0;">هيظهر في التقارير المُصدَّرة والمطبوعة</label><span class="autosave-status" id="shop-status"></span></div>
       <input type="text" id="f-shop-name" placeholder="مثال: محل الأمل للأقمشة" value="${escapeHtml(shopName || '')}" style="max-width:360px;">
     </div>
 
@@ -55,7 +55,6 @@ export async function renderSettingsView(container) {
   const shopInput = qs('#f-shop-name', container);
   autosaveField(shopInput, async (val) => {
     await setSetting('shopName', val.trim());
-    await applyShopName();
   }, { statusEl: qs('#shop-status', container), delay: 500 });
 
   qs('#btn-backup', container).addEventListener('click', async () => {

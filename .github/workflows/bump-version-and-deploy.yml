@@ -1,0 +1,45 @@
+# Bumps the app version on every push to main, so a deployed browser
+# notices the new build (js/core/version.js, version.json, the sw.js
+# cache name and CHANGELOG.md all move together — see
+# scripts/bump-version.js) and reloads itself.
+#
+# The bump is committed back to main with [skip ci] so the push it makes
+# does not trigger this workflow again.
+name: Bump version and deploy
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bump-version
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Bump patch version
+        id: bump
+        run: echo "version=$(node scripts/bump-version.js patch)" >> "$GITHUB_OUTPUT"
+
+      - name: Commit the bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add js/core/version.js version.json sw.js CHANGELOG.md
+          git diff --staged --quiet && echo "nothing to commit" && exit 0
+          git commit -m "chore: bump version to ${{ steps.bump.outputs.version }} [skip ci]"
+          git push

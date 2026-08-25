@@ -22,7 +22,12 @@ function isToday(iso) {
 // keep firing (or pile up duplicate timers) in the background.
 let refreshTimer = null;
 let visibilityHandler = null;
-const REFRESH_INTERVAL_MS = 30000;
+// Each refresh is a handful of whole-collection reads. Coming back to
+// the tab already triggers one (see the visibility handler below), so
+// the timer only needs to cover the case of sitting on this screen with
+// it open — a minute is plenty, and it no longer burns reads in a tab
+// nobody is looking at.
+const REFRESH_INTERVAL_MS = 60000;
 
 function onDashboard() {
   const hash = window.location.hash || '#/dashboard';
@@ -40,6 +45,7 @@ export async function renderDashboard(container) {
 
   refreshTimer = setInterval(() => {
     if (!onDashboard()) { cleanupDashboardRefresh(); return; }
+    if (document.visibilityState !== 'visible') return; // hidden tab — nobody is reading these numbers
     renderDashboardContent(container);
   }, REFRESH_INTERVAL_MS);
 

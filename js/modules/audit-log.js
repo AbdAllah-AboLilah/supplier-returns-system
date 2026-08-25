@@ -2,7 +2,7 @@
 // modules/audit-log.js — سجل العمليات
 // =========================================================
 import { getAuditLog } from '../core/audit.js';
-import { fmtDate, escapeHtml, fuzzyIncludes, debounce, paginate, renderPagination, qs } from '../core/utils.js';
+import { fmtDate, escapeHtml, fuzzyIncludes, debounce, paginate, renderPagination, qs, renderPreservingFocus } from '../core/utils.js';
 
 const ENTITY_LABELS = { supplier: 'مورد', erpItem: 'صنف ERP', supplierItem: 'صنف مورد', return: 'مرتجعة', system: 'نظام' };
 
@@ -20,7 +20,7 @@ export async function renderAuditLogView(container) {
   if (state.dateFrom) filtered = filtered.filter(a => a.timestamp >= state.dateFrom);
   if (state.dateTo) filtered = filtered.filter(a => a.timestamp <= state.dateTo + 'T23:59:59');
 
-  container.innerHTML = `
+  renderPreservingFocus(container, `
     <div class="card">
       <div class="table-toolbar">
         <input type="search" id="audit-search" placeholder="🔎 بحث في العمليات" style="max-width:280px;" value="${escapeHtml(state.query)}">
@@ -42,7 +42,7 @@ export async function renderAuditLogView(container) {
       <div class="card-pad" id="audit-list"></div>
       <div id="audit-pagination"></div>
     </div>
-  `;
+  `);
 
   const { slice, totalPages, page, total } = paginate(filtered, state.page, state.pageSize);
   const list = qs('#audit-list', container);

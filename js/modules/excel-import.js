@@ -7,7 +7,7 @@
 // =========================================================
 import { getAll, bulkPut } from '../core/db.js';
 import { uid, nowIso, fmtInt, fmtMoney, escapeHtml, fuzzyIncludes, normalizeArabic,
-         toast, paginate, renderPagination, qs, qsa, confirmDialog } from '../core/utils.js';
+         toast, paginate, renderPagination, qs, confirmDialog } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
 import { navigate } from '../core/router.js';
 
@@ -101,6 +101,7 @@ function renderUploadStep(body, container, wiz) {
       zone.innerHTML = `<div class="up-icon">⋯</div><div>جارِ قراءة الملف...</div>`;
       const buf = await file.arrayBuffer();
       const workbook = XLSX.read(buf, { type: 'array' });
+      if (!workbook.SheetNames || !workbook.SheetNames.length) throw new Error('empty workbook');
       wiz.fileName = file.name;
       wiz.workbook = workbook;
       wiz.sheetName = workbook.SheetNames[0] || null;
@@ -134,6 +135,9 @@ function renderSheetStep(body, container, wiz) {
   qs('#btn-back', body).addEventListener('click', () => goTo(container, wiz, 0));
   qs('#btn-next', body).addEventListener('click', () => {
     const chosen = body.querySelector('input[name=sheet]:checked');
+    // A workbook with no readable sheets renders no radio at all — bail
+    // out with a message instead of throwing on a null selection.
+    if (!chosen) { toast('الملف ده مفيهوش ورقة بيانات صالحة', 'error'); return; }
     wiz.sheetName = chosen.value;
     const sheet = wiz.workbook.Sheets[wiz.sheetName];
     wiz.rawRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', blankrows: false });

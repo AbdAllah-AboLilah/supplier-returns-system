@@ -67,6 +67,58 @@ export function fuzzyIncludes(haystack, needle) {
   return normalizeArabic(haystack).includes(normalizeArabic(needle));
 }
 
+// Re-rendering a whole screen replaces every node inside it — including
+// the search box the person is currently typing into, which silently
+// drops focus and the caret in the middle of a word. This swaps the
+// markup in, then puts focus (and the caret position) back where it was.
+export function renderPreservingFocus(container, html) {
+  const active = document.activeElement;
+  const keepId = (active && active.id && container.contains(active)) ? active.id : null;
+  let start = null, end = null;
+  if (keepId) {
+    try { start = active.selectionStart; end = active.selectionEnd; } catch (e) { /* not a text field */ }
+  }
+
+  container.innerHTML = html;
+
+  if (!keepId) return;
+  const next = container.querySelector(`#${CSS.escape(keepId)}`);
+  if (!next) return;
+  next.focus();
+  if (start !== null && typeof next.setSelectionRange === 'function') {
+    try { next.setSelectionRange(start, end); } catch (e) { /* input type without a caret */ }
+  }
+}
+
+// Event handlers that await a write used to fail silently: the promise
+// rejected, the console got a stack trace, and the person just saw a
+// button that did nothing. This surfaces the reason as a toast instead.
+export function guarded(fn, fallbackMessage = 'حصلت مشكلة، حاول تاني') {
+  return async (...args) => {
+    try {
+      return await fn(...args);
+    } catch (err) {
+      console.error(err);
+      toast((err && err.message) || fallbackMessage, 'error');
+    }
+  };
+}
+
+// Closes any open autocomplete dropdown when the click lands outside it.
+// Registered per screen render and returned as a disposer — the previous
+// version used { once: true }, which meant the very first click anywhere
+// (even inside the dropdown itself) consumed the listener and every later
+// outside-click left the dropdown stuck open.
+export function closeOnOutsideClick(boxes) {
+  const list = Array.isArray(boxes) ? boxes : [boxes];
+  const handler = (e) => {
+    if (e.target.closest('.autocomplete')) return;
+    list.forEach(b => { if (b) b.style.display = 'none'; });
+  };
+  document.addEventListener('click', handler);
+  return () => document.removeEventListener('click', handler);
+}
+
 export function el(html) {
   const t = document.createElement('template');
   t.innerHTML = html.trim();
@@ -106,12 +158,19 @@ export function openModal({ title, bodyHtml, wide = false, footerButtons = [], o
     footer.appendChild(b);
   });
 
-  function close() { backdrop.remove(); }
+  // Anything a modal wires up outside its own subtree (a document-level
+  // click listener, a timer) registers its teardown here so it dies with
+  // the modal instead of piling up every time one is opened.
+  const cleanups = [];
+  function close() {
+    cleanups.forEach(fn => { try { fn(); } catch (e) { console.error(e); } });
+    backdrop.remove();
+  }
   backdrop.querySelector('.modal-close').addEventListener('click', close);
   backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
   root.appendChild(backdrop);
   if (onMount) onMount(backdrop, close);
-  return { close, node: backdrop };
+  return { close, node: backdrop, onClose: (fn) => cleanups.push(fn) };
 }
 
 export function confirmDialog(message, { okLabel = 'تأكيد', danger = false } = {}) {

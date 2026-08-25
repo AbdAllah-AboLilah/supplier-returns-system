@@ -7,9 +7,10 @@
 // supplier item at the moment it's added, so later cost
 // changes never rewrite past returns.
 // =========================================================
-import { getAll, getById, getByIndex, put, remove, removeWhere, generateReturnNumber } from '../core/db.js';
+import { getAll, getById, getByIndex, put, remove, removeWhere, bulkPut, generateReturnNumber } from '../core/db.js';
 import { uid, nowIso, fmtMoney, fmtDate, fmtInt, escapeHtml, fuzzyIncludes, debounce,
-         openModal, confirmDialog, toast, el, qs, qsa, paginate, renderPagination } from '../core/utils.js';
+         openModal, confirmDialog, toast, qs, qsa, paginate, renderPagination,
+         renderPreservingFocus, guarded, closeOnOutsideClick } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
 import { navigate } from '../core/router.js';
 import { searchSupplierItems, getOrCreateSupplierItem, updateCost as updateSupplierItemCost, openLinkModal } from './supplier-items.js';
@@ -21,6 +22,18 @@ import { openExportOptionsModal } from './return-export.js';
 export async function listReturnsRaw() {
   return getAll('returns');
 }
+
+// Every mutation below used to assume its record still exists. When it
+// didn't — deleted on another device, or a stale button in an old
+// render — the handler died on "cannot set property of null" and the
+// person just saw a button that did nothing. Now they get told why.
+async function loadOrFail(store, id, missingMessage) {
+  const row = await getById(store, id);
+  if (!row) throw new Error(missingMessage);
+  return row;
+}
+const loadReturn = (id) => loadOrFail('returns', id, 'المرتجعة دي مش موجودة — يمكن تكون اتحذفت من جهاز تاني.');
+const loadLine = (id) => loadOrFail('returnItems', id, 'الصنف ده مش موجود في المرتجعة — جرّب تحدّث الصفحة.');
 
 export async function getReturnItems(returnId) {
   const rows = await getByIndex('returnItems', 'returnId', returnId);
@@ -36,20 +49,29 @@ export async function getReturnItems(returnId) {
 // than freezing that link forever, re-check it every time the return
 // is opened and quietly correct the line if the mapping has changed
 // since — so "غير مرتبط" never lingers after you've actually linked it.
-async function syncLineErpLinks(lines) {
-  for (const line of lines) {
-    const si = await getById('supplierItems', line.supplierItemId);
-    if (!si) continue;
-    if ((si.erpItemId || null) !== (line.erpItemId || null)) {
-      line.erpItemId = si.erpItemId || null;
-      line.erpItemName = null;
-      if (si.erpItemId) {
-        const erp = await getById('erpItems', si.erpItemId);
-        line.erpItemName = erp ? erp.name : null;
-      }
-      await put('returnItems', line);
-    }
-  }
+async function syncLineErpLinks(lines, supplierId) {
+  if (!lines.length) return;
+  // This runs on every single open (and re-open) of a return. Doing it
+  // one line at a time meant a 30-line return fired 30+ sequential
+  // round trips before the screen could paint — the single biggest
+  // reason a return was slow to open. Two lookups now cover every line,
+  // and only lines whose mapping actually changed get written back.
+  const supplierItems = await getByIndex('supplierItems', 'supplierId', supplierId);
+  const siById = Object.fromEntries(supplierItems.map(si => [si.id, si]));
+
+  const changed = lines.filter(line => {
+    const si = siById[line.supplierItemId];
+    return si && (si.erpItemId || null) !== (line.erpItemId || null);
+  });
+  if (!changed.length) return;
+
+  const erpById = Object.fromEntries((await getAll('erpItems')).map(i => [i.id, i]));
+  changed.forEach(line => {
+    const si = siById[line.supplierItemId];
+    line.erpItemId = si.erpItemId || null;
+    line.erpItemName = line.erpItemId ? (erpById[line.erpItemId]?.name || null) : null;
+  });
+  await bulkPut('returnItems', changed);
 }
 
 export async function computeTotal(returnId) {
@@ -150,7 +172,7 @@ export async function addItemLine(returnId, supplierId, supplierItemName, qty, c
 }
 
 export async function updateLine(lineId, { qty, unitCost }) {
-  const line = await getById('returnItems', lineId);
+  const line = await loadLine(lineId);
   if (qty !== undefined) line.qty = Number(qty) || 0;
   if (unitCost !== undefined) {
     const newCost = Number(unitCost) || 0;
@@ -175,7 +197,7 @@ export async function updateLine(lineId, { qty, unitCost }) {
 // until the replacement physically arrives) ----------
 
 export async function setLineResolutionType(lineId, resolutionType) {
-  const line = await getById('returnItems', lineId);
+  const line = await loadLine(lineId);
   line.resolutionType = resolutionType;
   if (resolutionType !== 'exchange') { line.replacementReceived = false; line.replacementReceivedAt = null; }
   await put('returnItems', line);
@@ -183,7 +205,7 @@ export async function setLineResolutionType(lineId, resolutionType) {
 }
 
 export async function setLineReplacementReceived(lineId, received) {
-  const line = await getById('returnItems', lineId);
+  const line = await loadLine(lineId);
   line.replacementReceived = received;
   line.replacementReceivedAt = received ? nowIso() : null;
   await put('returnItems', line);
@@ -194,30 +216,31 @@ export async function setLineReplacementReceived(lineId, received) {
 export async function markAllReplacementsReceived(returnId) {
   const lines = await getReturnItems(returnId);
   const toMark = lines.filter(l => l.resolutionType === 'exchange' && !l.replacementReceived);
-  for (const l of toMark) {
-    l.replacementReceived = true;
-    l.replacementReceivedAt = nowIso();
-    await put('returnItems', l);
-  }
-  if (toMark.length) await logAction('استلام كل بدائل المرتجعة', 'return', returnId, `${toMark.length} صنف`);
+  if (!toMark.length) return 0;
+  // One batched write instead of one round trip per item — "استلمت كل
+  // البدائل" on a 40-line return was 40 sequential writes.
+  const stamp = nowIso();
+  toMark.forEach(l => { l.replacementReceived = true; l.replacementReceivedAt = stamp; });
+  await bulkPut('returnItems', toMark);
+  await logAction('استلام كل بدائل المرتجعة', 'return', returnId, `${toMark.length} صنف`);
   return toMark.length;
 }
 
 export async function removeLine(lineId) {
-  const line = await getById('returnItems', lineId);
+  const line = await loadLine(lineId);
   await remove('returnItems', lineId);
   getById('returns', line.returnId).then(ret => { if (ret) touchReturn(ret); }).catch(err => console.error('touchReturn failed:', err));
   logAction('حذف صنف من المرتجعة', 'return', line.returnId, line.supplierItemName).catch(err => console.error('audit log failed:', err));
 }
 
 export async function saveNotes(returnId, notes) {
-  const ret = await getById('returns', returnId);
+  const ret = await loadReturn(returnId);
   ret.notes = notes;
   await touchReturn(ret);
 }
 
 export async function sendReturn(returnId) {
-  const ret = await getById('returns', returnId);
+  const ret = await loadReturn(returnId);
   ret.status = 'sent';
   ret.locked = true;
   ret.editingUnlocked = false;
@@ -228,7 +251,7 @@ export async function sendReturn(returnId) {
 }
 
 export async function unlockForEditing(returnId) {
-  const ret = await getById('returns', returnId);
+  const ret = await loadReturn(returnId);
   ret.editingUnlocked = true;
   await touchReturn(ret);
   await logAction('فتح المرتجعة للتعديل بعد الإرسال', 'return', returnId, ret.returnNumber);
@@ -236,7 +259,7 @@ export async function unlockForEditing(returnId) {
 }
 
 export async function relockAfterEditing(returnId) {
-  const ret = await getById('returns', returnId);
+  const ret = await loadReturn(returnId);
   ret.editingUnlocked = false;
   ret.lastPostSendEditAt = nowIso();
   await touchReturn(ret);
@@ -245,7 +268,7 @@ export async function relockAfterEditing(returnId) {
 }
 
 export async function markErpRegistered(returnId, transactionNumber) {
-  const ret = await getById('returns', returnId);
+  const ret = await loadReturn(returnId);
   ret.erpRegistered = true;
   ret.erpRegisteredAt = nowIso();
   ret.erpTransactionNumber = transactionNumber || '';
@@ -255,7 +278,7 @@ export async function markErpRegistered(returnId, transactionNumber) {
 }
 
 export async function unmarkErpRegistered(returnId) {
-  const ret = await getById('returns', returnId);
+  const ret = await loadReturn(returnId);
   ret.erpRegistered = false;
   ret.erpRegisteredAt = null;
   await touchReturn(ret);
@@ -264,7 +287,7 @@ export async function unmarkErpRegistered(returnId) {
 }
 
 export async function setClosed(returnId, closed) {
-  const ret = await getById('returns', returnId);
+  const ret = await loadReturn(returnId);
   ret.status = closed ? 'closed' : (ret.sentAt ? 'sent' : 'draft');
   await touchReturn(ret);
   await logAction(closed ? 'أرشفة المرتجعة' : 'إعادة فتح المرتجعة', 'return', returnId, ret.returnNumber);
@@ -326,7 +349,12 @@ export async function renderReturnsList(container, filterKey, presetSupplierId =
 
   const hasActiveFilters = !!(listState.dateFrom || listState.dateTo || (listState.supplierFilter && !presetSupplierId));
 
-  container.innerHTML = `
+  // The page/pageSize in listState were declared from the start but never
+  // applied — every return ever created was rendered into one table, so
+  // this screen got steadily heavier with use.
+  const { slice, totalPages, page, total } = paginate(rows, listState.page, listState.pageSize);
+
+  renderPreservingFocus(container, `
     <div class="card">
       <div class="table-toolbar">
         <input type="search" id="ret-search" placeholder="🔎 رقم المرتجعة أو المورد" style="max-width:240px;" value="${escapeHtml(listState.query)}">
@@ -346,13 +374,13 @@ export async function renderReturnsList(container, filterKey, presetSupplierId =
         <input type="date" id="ret-date-to" value="${listState.dateTo}">
         ${hasActiveFilters ? `<button class="btn btn-sm btn-ghost filter-clear" id="btn-clear-filters">✕ مسح الفلاتر</button>` : ''}
       </div>
-      ${rows.length ? `
+      ${slice.length ? `
       <table class="data-table">
         <thead><tr>
           <th>رقم المرتجعة</th><th>المورد</th><th>التاريخ</th><th class="num">عدد الأصناف</th><th class="num">القيمة</th><th>الحالة</th><th>ERP</th>
         </tr></thead>
         <tbody>
-          ${rows.map(r => `
+          ${slice.map(r => `
             <tr class="row-link" data-id="${r.id}">
               <td class="text-mono" data-label="رقم المرتجعة">${escapeHtml(r.returnNumber)}</td>
               <td data-label="المورد">${escapeHtml(r.supplierName)}</td>
@@ -370,17 +398,27 @@ export async function renderReturnsList(container, filterKey, presetSupplierId =
         <div class="empty-title">لا توجد مرتجعات في ${escapeHtml(FILTER_LABELS[filterKey] || '')}</div>
         <div class="empty-hint">${hasActiveFilters ? 'جرّب توسيع نطاق الفلاتر' : 'أنشئ مرتجعة جديدة للبدء'}</div>
       </div>`}
+      <div id="returns-pagination"></div>
     </div>
-  `;
+  `);
+
+  const pagWrap = qs('#returns-pagination', container);
+  if (pagWrap && total > 0) {
+    pagWrap.appendChild(renderPagination({
+      page, totalPages, total, pageSize: listState.pageSize,
+      onPage: (p) => { listState.page = p; renderReturnsList(container, filterKey, presetSupplierId); },
+      onPageSize: (sz) => { listState.pageSize = sz; listState.page = 1; renderReturnsList(container, filterKey, presetSupplierId); },
+    }));
+  }
 
   container.querySelectorAll('tr.row-link').forEach(row => row.addEventListener('click', () => navigate(`/returns/${row.dataset.id}`)));
-  qs('#ret-search', container).addEventListener('input', debounce((e) => { listState.query = e.target.value; renderReturnsList(container, filterKey, presetSupplierId); }, 200));
+  qs('#ret-search', container).addEventListener('input', debounce((e) => { listState.query = e.target.value; listState.page = 1; renderReturnsList(container, filterKey, presetSupplierId); }, 200));
   const sf = qs('#ret-supplier-filter', container);
-  if (sf) sf.addEventListener('change', () => { listState.supplierFilter = sf.value; renderReturnsList(container, filterKey, presetSupplierId); });
-  qs('#ret-date-from', container).addEventListener('change', (e) => { listState.dateFrom = e.target.value; renderReturnsList(container, filterKey, presetSupplierId); });
-  qs('#ret-date-to', container).addEventListener('change', (e) => { listState.dateTo = e.target.value; renderReturnsList(container, filterKey, presetSupplierId); });
+  if (sf) sf.addEventListener('change', () => { listState.supplierFilter = sf.value; listState.page = 1; renderReturnsList(container, filterKey, presetSupplierId); });
+  qs('#ret-date-from', container).addEventListener('change', (e) => { listState.dateFrom = e.target.value; listState.page = 1; renderReturnsList(container, filterKey, presetSupplierId); });
+  qs('#ret-date-to', container).addEventListener('change', (e) => { listState.dateTo = e.target.value; listState.page = 1; renderReturnsList(container, filterKey, presetSupplierId); });
   qs('#btn-clear-filters', container)?.addEventListener('click', () => {
-    listState.supplierFilter = ''; listState.dateFrom = ''; listState.dateTo = '';
+    listState.supplierFilter = ''; listState.dateFrom = ''; listState.dateTo = ''; listState.page = 1;
     renderReturnsList(container, filterKey, presetSupplierId);
   });
   qs('#btn-new-return', container).addEventListener('click', () => openNewReturnModal(presetSupplierId));
@@ -389,7 +427,7 @@ export async function renderReturnsList(container, filterKey, presetSupplierId =
 async function openNewReturnModal(presetSupplierId) {
   const suppliers = await getAll('suppliers');
   if (!suppliers.length) { toast('أضف موردًا أولًا من صفحة الموردين', 'error'); return; }
-  const { close, node } = openModal({
+  const { node } = openModal({
     title: 'مرتجعة جديدة',
     bodyHtml: `
       <div class="field"><label>المورد *</label>
@@ -402,12 +440,26 @@ async function openNewReturnModal(presetSupplierId) {
       { label: 'إلغاء', className: 'btn-ghost', onClick: (c) => c() },
       {
         label: 'إنشاء المرتجعة', className: 'btn-primary',
-        onClick: async (c) => {
-          const supplierId = qs('#f-supplier', node).value;
-          const ret = await createDraftReturn(supplierId);
-          c();
-          navigate(`/returns/${ret.id}`);
-        },
+        // Creating a return reserves a sequential number over the
+        // network, so it is slow enough to double-click through —
+        // which used to burn a number and leave an orphan draft.
+        onClick: guarded(async (c) => {
+          const btn = qs('.modal-footer .btn-primary', node);
+          if (btn.disabled) return;
+          btn.disabled = true;
+          const originalLabel = btn.textContent;
+          btn.textContent = 'جارِ الإنشاء...';
+          try {
+            const supplierId = qs('#f-supplier', node).value;
+            const ret = await createDraftReturn(supplierId);
+            c();
+            navigate(`/returns/${ret.id}`);
+          } catch (err) {
+            btn.disabled = false;
+            btn.textContent = originalLabel;
+            throw err;
+          }
+        }, 'تعذّر إنشاء المرتجعة — إنشاء رقم جديد محتاج إنترنت.'),
       },
     ],
   });
@@ -418,9 +470,11 @@ async function openNewReturnModal(presetSupplierId) {
 export async function renderReturnDetail(container, returnId) {
   const ret = await getById('returns', returnId);
   if (!ret) { container.innerHTML = `<div class="card card-pad">المرتجعة غير موجودة.</div>`; return; }
-  const supplier = await getById('suppliers', ret.supplierId);
-  const lines = await getReturnItems(returnId);
-  await syncLineErpLinks(lines);
+  const [supplier, lines] = await Promise.all([
+    getById('suppliers', ret.supplierId),
+    getReturnItems(returnId),
+  ]);
+  await syncLineErpLinks(lines, ret.supplierId);
   const totalQty = lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
   const totalValue = lines.reduce((s, l) => s + (Number(l.total) || 0), 0);
   const editable = ret.status === 'draft' || ret.editingUnlocked;
@@ -595,13 +649,19 @@ function recalcRowAndTotals(container, lineId) {
   const fv = qs('#footer-total-value', container); if (fv) fv.innerHTML = `<b>${fmtMoney(totalValue)}</b>`;
 }
 
+// The return screen re-renders itself after almost every action, so the
+// "click outside to close the suggestions" listener has to be replaced,
+// not stacked. Keeping the disposer here means at most one is ever live.
+let disposeOutsideClick = null;
+
 function wireDetailEvents(container, ret, lines, supplier) {
-  qs('#btn-delete', container)?.addEventListener('click', async () => {
+  if (disposeOutsideClick) { disposeOutsideClick(); disposeOutsideClick = null; }
+  qs('#btn-delete', container)?.addEventListener('click', guarded(async () => {
     if (!(await confirmDialog(`سيتم حذف المرتجعة ${ret.returnNumber} نهائيًا. هل أنت متأكد؟`, { danger: true }))) return;
     await deleteReturn(ret.id);
     toast('تم حذف المرتجعة', 'success');
     navigate('/returns/active');
-  });
+  }));
 
   // Link straight from the return — no need to leave and go find this
   // item in the supplier's item list just to fix the ERP mapping.
@@ -609,16 +669,16 @@ function wireDetailEvents(container, ret, lines, supplier) {
     openLinkModal(b.dataset.supplierItemId, () => renderReturnDetail(container, ret.id));
   }));
 
-  qs('#btn-unlock', container)?.addEventListener('click', async () => {
+  qs('#btn-unlock', container)?.addEventListener('click', guarded(async () => {
     if (!(await confirmDialog('هل تريد فتح المرتجعة للتعديل؟ سيبقى تاريخ الإرسال الأصلي محفوظًا.'))) return;
     await unlockForEditing(ret.id);
     renderReturnDetail(container, ret.id);
-  });
-  qs('#btn-relock', container)?.addEventListener('click', async () => {
+  }));
+  qs('#btn-relock', container)?.addEventListener('click', guarded(async () => {
     await relockAfterEditing(ret.id);
     toast('تم إعادة القفل', 'success');
     renderReturnDetail(container, ret.id);
-  });
+  }));
 
   qsa('.line-qty', container).forEach(inp => autosaveField(inp, async (val) => {
     await updateLine(inp.dataset.id, { qty: val });
@@ -630,19 +690,19 @@ function wireDetailEvents(container, ret, lines, supplier) {
     inp.title = '';
     recalcRowAndTotals(container, inp.dataset.id);
   }, { delay: 500 }));
-  qsa('.line-remove', container).forEach(b => b.addEventListener('click', async () => {
+  qsa('.line-remove', container).forEach(b => b.addEventListener('click', guarded(async () => {
     await removeLine(b.dataset.id);
     renderReturnDetail(container, ret.id);
-  }));
-  qsa('.line-resolution', container).forEach(sel => sel.addEventListener('change', async () => {
+  })));
+  qsa('.line-resolution', container).forEach(sel => sel.addEventListener('change', guarded(async () => {
     await setLineResolutionType(sel.dataset.id, sel.value);
     renderReturnDetail(container, ret.id);
-  }));
-  qsa('.line-toggle-received', container).forEach(b => b.addEventListener('click', async () => {
+  })));
+  qsa('.line-toggle-received', container).forEach(b => b.addEventListener('click', guarded(async () => {
     await setLineReplacementReceived(b.dataset.id, true);
     toast('تم تسجيل استلام البديل', 'success');
     renderReturnDetail(container, ret.id);
-  }));
+  })));
 
   const nameInput = qs('#add-item-name', container);
   const resultsBox = qs('#add-item-results', container);
@@ -693,7 +753,7 @@ function wireDetailEvents(container, ret, lines, supplier) {
         });
       });
     }, 200));
-    document.addEventListener('click', (e) => { if (!e.target.closest('.autocomplete')) resultsBox.style.display = 'none'; }, { once: true });
+    disposeOutsideClick = closeOnOutsideClick(resultsBox);
   }
 
   // Typing into the cost field yourself counts as taking ownership of
@@ -743,12 +803,12 @@ function wireDetailEvents(container, ret, lines, supplier) {
 
   qs('#btn-export', container)?.addEventListener('click', () => openExportOptionsModal(ret, lines, supplier));
 
-  qs('#btn-send', container)?.addEventListener('click', async () => {
+  qs('#btn-send', container)?.addEventListener('click', guarded(async () => {
     if (!(await confirmDialog(`سيتم إرسال المرتجعة ${ret.returnNumber} للمورد وقفل الأصناف. هل أنت متأكد؟`))) return;
     await sendReturn(ret.id);
     toast('تم إرسال المرتجعة', 'success');
     renderReturnDetail(container, ret.id);
-  });
+  }));
 
   qs('#btn-erp', container)?.addEventListener('click', () => {
     openModal({
@@ -756,26 +816,26 @@ function wireDetailEvents(container, ret, lines, supplier) {
       bodyHtml: `<div class="field"><label>رقم حركة ERP (اختياري)</label><input type="text" id="f-erp-num" placeholder="مثال: ERP-RET-45281"></div>`,
       footerButtons: [
         { label: 'إلغاء', className: 'btn-ghost', onClick: (c) => c() },
-        { label: 'تأكيد التسجيل', className: 'btn-gold', onClick: async (c) => {
+        { label: 'تأكيد التسجيل', className: 'btn-gold', onClick: guarded(async (c) => {
             await markErpRegistered(ret.id, qs('#f-erp-num').value.trim());
             toast('تم تسجيل المرتجعة على ERP', 'success');
             c(); renderReturnDetail(container, ret.id);
-          } },
+          }) },
       ],
     });
   });
-  qs('#btn-unerp', container)?.addEventListener('click', async () => {
+  qs('#btn-unerp', container)?.addEventListener('click', guarded(async () => {
     if (!(await confirmDialog('هل تريد إلغاء تعليم هذه المرتجعة كمسجلة على ERP؟'))) return;
     await unmarkErpRegistered(ret.id);
     renderReturnDetail(container, ret.id);
-  });
+  }));
 
-  qs('#btn-receive-all', container)?.addEventListener('click', async () => {
+  qs('#btn-receive-all', container)?.addEventListener('click', guarded(async () => {
     const n = await markAllReplacementsReceived(ret.id);
     if (n) toast(`تم تسجيل استلام ${n} صنف`, 'success');
     renderReturnDetail(container, ret.id);
-  });
+  }));
 
-  qs('#btn-archive', container)?.addEventListener('click', async () => { await setClosed(ret.id, true); toast('تم نقل المرتجعة للأرشيف', 'success'); renderReturnDetail(container, ret.id); });
-  qs('#btn-reopen', container)?.addEventListener('click', async () => { await setClosed(ret.id, false); renderReturnDetail(container, ret.id); });
+  qs('#btn-archive', container)?.addEventListener('click', guarded(async () => { await setClosed(ret.id, true); toast('تم نقل المرتجعة للأرشيف', 'success'); renderReturnDetail(container, ret.id); }));
+  qs('#btn-reopen', container)?.addEventListener('click', guarded(async () => { await setClosed(ret.id, false); renderReturnDetail(container, ret.id); }));
 }

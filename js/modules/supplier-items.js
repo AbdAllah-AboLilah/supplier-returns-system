@@ -11,7 +11,7 @@
 // =========================================================
 import { getAll, getById, getByIndex, put, remove, removeWhere } from '../core/db.js';
 import { uid, nowIso, fmtMoney, fmtInt, fmtDate, escapeHtml, fuzzyIncludes, normalizeArabic, debounce,
-         openModal, confirmDialog, toast, el, qs, qsa } from '../core/utils.js';
+         openModal, confirmDialog, toast, qs, closeOnOutsideClick, guarded } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
 import { findErpItems } from './item-links.js';
 
@@ -25,6 +25,9 @@ export async function listBySupplier(supplierId) {
 export async function searchSupplierItems(supplierId, query, limit = 8) {
   const rows = await listBySupplier(supplierId);
   const filtered = rows.filter(r => fuzzyIncludes(r.supplierItemName, query)).slice(0, limit);
+  // Only the handful of rows about to be shown need their ERP item, so
+  // don't pull the whole catalog when nothing matched at all.
+  if (!filtered.length) return [];
   const erpItems = await getAll('erpItems');
   const erpById = Object.fromEntries(erpItems.map(i => [i.id, i]));
   return filtered.map(r => {
@@ -60,6 +63,7 @@ export async function getOrCreateSupplierItem(supplierId, name) {
 
 export async function linkErpItem(supplierItemId, erpItemId) {
   const row = await getById('supplierItems', supplierItemId);
+  if (!row) throw new Error('الصنف ده مش موجود — يمكن يكون اتحذف من جهاز تاني.');
   row.erpItemId = erpItemId;
   row.updatedAt = nowIso();
   await put('supplierItems', row);
@@ -70,6 +74,7 @@ export async function linkErpItem(supplierItemId, erpItemId) {
 
 export async function unlinkErpItem(supplierItemId) {
   const row = await getById('supplierItems', supplierItemId);
+  if (!row) throw new Error('الصنف ده مش موجود — يمكن يكون اتحذف من جهاز تاني.');
   row.erpItemId = null;
   row.updatedAt = nowIso();
   await put('supplierItems', row);
@@ -85,8 +90,14 @@ export async function updateCost(supplierItemId, newCost, preloaded = null) {
   // history/audit-log writes: they matter for the record, not for
   // confirming *this* save succeeded, so let them finish in the background.
   const row = preloaded || await getById('supplierItems', supplierItemId);
-  const oldCost = row.currentCost;
-  row.currentCost = Number(newCost) || 0;
+  if (!row) throw new Error('الصنف ده مش موجود — يمكن يكون اتحذف من جهاز تاني.');
+  const oldCost = Number(row.currentCost) || 0;
+  const nextCost = Number(newCost) || 0;
+  // Saving the same number again is not a price change: it used to
+  // still cost a write *and* append a meaningless row to the cost
+  // history (so a history could fill up with the same figure repeated).
+  if (oldCost === nextCost) return row;
+  row.currentCost = nextCost;
   row.updatedAt = nowIso();
   await put('supplierItems', row);
   put('costHistory', { id: uid(), supplierItemId, cost: row.currentCost, effectiveFrom: nowIso(), createdAt: nowIso() }).catch(err => console.error('cost history write failed:', err));
@@ -100,8 +111,13 @@ export async function getCostHistory(supplierItemId) {
 }
 
 export async function deleteSupplierItem(supplierItemId) {
-  await remove('supplierItems', supplierItemId);
-  await removeWhere('costHistory', 'supplierItemId', supplierItemId);
+  // Independent of each other — waiting for the first before starting
+  // the second doubled the wait, which showed up when deleting a
+  // supplier that had dozens of items.
+  await Promise.all([
+    remove('supplierItems', supplierItemId),
+    removeWhere('costHistory', 'supplierItemId', supplierItemId),
+  ]);
 }
 
 export async function listUnlinked() {
@@ -184,18 +200,18 @@ export async function renderSupplierItemsPanel(container, supplierId) {
   container.querySelectorAll('.btn-link').forEach(b => b.addEventListener('click', () => openLinkModal(b.dataset.id, () => renderSupplierItemsPanel(container, supplierId))));
   container.querySelectorAll('.btn-cost').forEach(b => b.addEventListener('click', () => openCostModal(b.dataset.id, () => renderSupplierItemsPanel(container, supplierId))));
   container.querySelectorAll('.btn-hist').forEach(b => b.addEventListener('click', () => openHistoryModal(b.dataset.id)));
-  container.querySelectorAll('.btn-del-mapping').forEach(b => b.addEventListener('click', async () => {
+  container.querySelectorAll('.btn-del-mapping').forEach(b => b.addEventListener('click', guarded(async () => {
     const ok = await confirmDialog(`سيتم حذف "${b.dataset.name}" وسجل تكلفته نهائيًا من هذا المورد. المرتجعات السابقة اللي استخدمته مش هتتأثر. هل أنت متأكد؟`, { danger: true, okLabel: 'حذف' });
     if (!ok) return;
     await deleteSupplierItem(b.dataset.id);
     await logAction('حذف صنف عند المورد', 'supplierItem', b.dataset.id, b.dataset.name);
     toast('تم الحذف', 'success');
     renderSupplierItemsPanel(container, supplierId);
-  }));
+  })));
 }
 
 function openAddMappingModal(supplierId, onDone) {
-  const { close, node } = openModal({
+  const { node, onClose } = openModal({
     title: 'إضافة / تعديل صنف عند المورد',
     bodyHtml: `
       <div class="field autocomplete">
@@ -216,7 +232,7 @@ function openAddMappingModal(supplierId, onDone) {
       { label: 'إلغاء', className: 'btn-ghost', onClick: (c) => c() },
       {
         label: 'حفظ', className: 'btn-primary',
-        onClick: async (c) => {
+        onClick: guarded(async (c) => {
           const name = qs('#f-name', node).value.trim();
           if (!name) { toast('الاسم مطلوب', 'error'); return; }
           const si = await getOrCreateSupplierItem(supplierId, name);
@@ -227,7 +243,7 @@ function openAddMappingModal(supplierId, onDone) {
           // `si` here would silently overwrite that link with the stale copy.
           if (costVal !== '') await updateCost(si.id, costVal);
           c(); onDone();
-        },
+        }),
       },
     ],
   });
@@ -293,9 +309,7 @@ function openAddMappingModal(supplierId, onDone) {
     });
   }, 200));
 
-  document.addEventListener('click', (e) => {
-    if (!e.target.closest('.autocomplete')) { nameResults.style.display = 'none'; qs('#erp-results', node).style.display = 'none'; }
-  }, { once: true });
+  onClose(closeOnOutsideClick([nameResults, qs('#erp-results', node)]));
 
   nameInput.focus();
 }
@@ -316,12 +330,16 @@ export function openLinkModal(supplierItemId, onDone) {
   const input = qs('#erp-search', node);
   const results = qs('#erp-results', node);
   input.addEventListener('input', debounce(async () => {
+    // fuzzyIncludes() treats an empty needle as "matches everything", so
+    // without this an emptied box listed 8 arbitrary items as if they
+    // were search results.
+    if (!input.value.trim()) { results.style.display = 'none'; return; }
     const matches = await findErpItems(input.value, 8);
     if (!matches.length) { results.innerHTML = `<div class="autocomplete-empty">لا توجد نتائج</div>`; results.style.display = 'block'; return; }
     results.innerHTML = matches.map(m => `<div class="autocomplete-item" data-id="${m.id}"><b>${escapeHtml(m.name)}</b><div class="ac-sub">${escapeHtml(m.barcode || '')}</div></div>`).join('');
     results.style.display = 'block';
     results.querySelectorAll('.autocomplete-item').forEach(it => {
-      it.addEventListener('click', async () => { await linkErpItem(supplierItemId, it.dataset.id); toast('تم الربط', 'success'); close(); onDone(); });
+      it.addEventListener('click', guarded(async () => { await linkErpItem(supplierItemId, it.dataset.id); toast('تم الربط', 'success'); close(); onDone(); }));
     });
   }, 200));
   input.focus();
@@ -329,7 +347,8 @@ export function openLinkModal(supplierItemId, onDone) {
 
 function openCostModal(supplierItemId, onDone) {
   getById('supplierItems', supplierItemId).then(row => {
-    const { close, node } = openModal({
+    if (!row) { toast('الصنف ده مش موجود — يمكن يكون اتحذف من جهاز تاني.', 'error'); return; }
+    const { node } = openModal({
       title: `تكلفة "${row.supplierItemName}"`,
       bodyHtml: `
         <div class="field"><label>التكلفة الحالية</label><input type="number" step="0.01" id="f-cost" value="${row.currentCost}"></div>
@@ -339,7 +358,7 @@ function openCostModal(supplierItemId, onDone) {
         { label: 'إلغاء', className: 'btn-ghost', onClick: (c) => c() },
         {
           label: 'حفظ', className: 'btn-primary',
-          onClick: async (c) => { await updateCost(supplierItemId, qs('#f-cost', node).value); toast('تم تحديث التكلفة', 'success'); c(); onDone(); },
+          onClick: guarded(async (c) => { await updateCost(supplierItemId, qs('#f-cost', node).value); toast('تم تحديث التكلفة', 'success'); c(); onDone(); }),
         },
       ],
     });
@@ -348,6 +367,7 @@ function openCostModal(supplierItemId, onDone) {
 
 async function openHistoryModal(supplierItemId) {
   const row = await getById('supplierItems', supplierItemId);
+  if (!row) { toast('الصنف ده مش موجود — يمكن يكون اتحذف من جهاز تاني.', 'error'); return; }
   const hist = await getCostHistory(supplierItemId);
   openModal({
     title: `سجل تكلفة "${row.supplierItemName}"`,
@@ -361,7 +381,12 @@ async function openHistoryModal(supplierItemId) {
 
 // ---------- UI: all suppliers' items in one screen, grouped by supplier ----------
 
-const allItemsViewState = { query: '' };
+// A shop with a few thousand supplier items used to render every single
+// row of every supplier in one pass, which is what made this screen slow
+// to open and slow to scroll. Each supplier shows a first page of rows
+// and expands on demand.
+const GROUP_ROW_CAP = 50;
+const allItemsViewState = { query: '', expanded: new Set() };
 
 export async function renderAllSupplierItemsView(container) {
   const [supplierItems, suppliers, erpItems] = await Promise.all([getAll('supplierItems'), getAll('suppliers'), getAll('erpItems')]);
@@ -396,7 +421,11 @@ export async function renderAllSupplierItemsView(container) {
       return;
     }
 
-    groupsWrap.innerHTML = groups.map(g => `
+    groupsWrap.innerHTML = groups.map(g => {
+      const expanded = allItemsViewState.expanded.has(g.supplier.id);
+      const shown = expanded ? g.items : g.items.slice(0, GROUP_ROW_CAP);
+      const hidden = g.items.length - shown.length;
+      return `
       <div class="card mb-16">
         <div class="card-header">
           <h3><a href="#/suppliers/${g.supplier.id}" style="color:inherit;">${escapeHtml(g.supplier.name)}</a></h3>
@@ -409,7 +438,7 @@ export async function renderAllSupplierItemsView(container) {
         <table class="data-table">
           <thead><tr><th>اسم الصنف عند المورد</th><th>صنف ERP المرتبط</th><th class="num">التكلفة الحالية</th><th></th></tr></thead>
           <tbody>
-            ${g.items.map(r => `
+            ${shown.map(r => `
               <tr>
                 <td data-label="اسم الصنف عند المورد"><b>${escapeHtml(r.supplierItemName)}</b></td>
                 <td data-label="صنف ERP المرتبط">${r.erpItemId && erpById[r.erpItemId]
@@ -425,22 +454,30 @@ export async function renderAllSupplierItemsView(container) {
               </tr>
             `).join('')}
           </tbody>
-        </table>` : `<div class="empty-state"><div class="empty-hint">لا توجد أصناف مطابقة</div></div>`}
+        </table>
+        ${hidden > 0 ? `<div class="card-pad" style="border-top:1px solid var(--line);text-align:center;">
+          <button class="btn btn-ghost btn-sm btn-expand-group" data-supplier-id="${g.supplier.id}">عرض باقي الأصناف (${fmtInt(hidden)})</button>
+        </div>` : ''}` : `<div class="empty-state"><div class="empty-hint">لا توجد أصناف مطابقة</div></div>`}
       </div>
-    `).join('');
+    `;
+    }).join('');
 
+    groupsWrap.querySelectorAll('.btn-expand-group').forEach(b => b.addEventListener('click', () => {
+      allItemsViewState.expanded.add(b.dataset.supplierId);
+      renderGroups();
+    }));
     groupsWrap.querySelectorAll('.btn-add-for-supplier').forEach(b => b.addEventListener('click', () => openAddMappingModal(b.dataset.supplierId, () => renderAllSupplierItemsView(container))));
     groupsWrap.querySelectorAll('.btn-link').forEach(b => b.addEventListener('click', () => openLinkModal(b.dataset.id, () => renderAllSupplierItemsView(container))));
     groupsWrap.querySelectorAll('.btn-cost').forEach(b => b.addEventListener('click', () => openCostModal(b.dataset.id, () => renderAllSupplierItemsView(container))));
     groupsWrap.querySelectorAll('.btn-hist').forEach(b => b.addEventListener('click', () => openHistoryModal(b.dataset.id)));
-    groupsWrap.querySelectorAll('.btn-del-mapping').forEach(b => b.addEventListener('click', async () => {
+    groupsWrap.querySelectorAll('.btn-del-mapping').forEach(b => b.addEventListener('click', guarded(async () => {
       const ok = await confirmDialog(`سيتم حذف "${b.dataset.name}" وسجل تكلفته نهائيًا. المرتجعات السابقة اللي استخدمته مش هتتأثر. هل أنت متأكد؟`, { danger: true, okLabel: 'حذف' });
       if (!ok) return;
       await deleteSupplierItem(b.dataset.id);
       logAction('حذف صنف عند المورد', 'supplierItem', b.dataset.id, b.dataset.name).catch(err => console.error('audit log failed:', err));
       toast('تم الحذف', 'success');
       renderAllSupplierItemsView(container);
-    }));
+    })));
   }
 
   renderGroups();

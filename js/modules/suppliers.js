@@ -3,7 +3,7 @@
 // =========================================================
 import { getAll, getById, put, remove } from '../core/db.js';
 import { uid, nowIso, fmtMoney, fmtInt, escapeHtml, fuzzyIncludes, debounce,
-         openModal, confirmDialog, toast, el, qs } from '../core/utils.js';
+         openModal, confirmDialog, toast, qs, renderPreservingFocus, guarded } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
 import { navigate } from '../core/router.js';
 import { getSupplierStats, renderReturnsList, createDraftReturn } from './returns.js';
@@ -22,7 +22,7 @@ export async function renderSuppliersList(container) {
 
   const filtered = all.filter(s => fuzzyIncludes(s.name, state.query)).sort((a, b) => a.name.localeCompare(b.name, 'ar'));
 
-  container.innerHTML = `
+  renderPreservingFocus(container, `
     <div class="card">
       <div class="table-toolbar">
         <input type="search" id="sup-search" placeholder="🔎 بحث باسم المورد" style="max-width:260px;" value="${escapeHtml(state.query)}">
@@ -40,7 +40,7 @@ export async function renderSuppliersList(container) {
         <div class="empty-hint">أضف أول مورد لتبدأ في تسجيل مرتجعاته</div>
       </div>`}
     </div>
-  `;
+  `);
 
   const tbody = qs('#sup-tbody', container);
   if (tbody) {
@@ -59,7 +59,7 @@ export async function renderSuppliersList(container) {
       navigate(`/suppliers/${row.dataset.id}`);
     }));
     tbody.querySelectorAll('.btn-edit').forEach(b => b.addEventListener('click', (e) => { e.stopPropagation(); openSupplierForm(container, b.dataset.id); }));
-    tbody.querySelectorAll('.btn-delete-row').forEach(b => b.addEventListener('click', async (e) => {
+    tbody.querySelectorAll('.btn-delete-row').forEach(b => b.addEventListener('click', guarded(async (e) => {
       e.stopPropagation();
       const supplierId = b.dataset.id, supplierName = b.dataset.name;
       const returnCount = returnCountBySupplier[supplierId] || 0;
@@ -73,12 +73,12 @@ export async function renderSuppliersList(container) {
         : `سيتم حذف المورد "${supplierName}" نهائيًا. هل أنت متأكد؟`;
       const ok = await confirmDialog(message, { danger: true, okLabel: 'حذف المورد' });
       if (!ok) return;
-      for (const item of items) await deleteSupplierItem(item.id);
+      await Promise.all(items.map(item => deleteSupplierItem(item.id)));
       await remove('suppliers', supplierId);
       await logAction('حذف مورد', 'supplier', supplierId, supplierName);
       toast('تم حذف المورد', 'success');
       renderSuppliersList(container);
-    }));
+    })));
   }
 
   qs('#sup-search', container).addEventListener('input', debounce((e) => { state.query = e.target.value; renderSuppliersList(container); }, 200));
@@ -106,29 +106,32 @@ export function openSupplierForm(container, supplierId, onSaved) {
       footerButtons: [
         {
           label: 'إلغاء', className: 'btn-ghost',
-          onClick: async (c) => {
+          onClick: guarded(async (c) => {
             if (!isEdit && recordId) { await remove('suppliers', recordId); }
             else if (isEdit && snapshot) { await put('suppliers', snapshot); }
             c();
-            if (onSaved) onSaved(); else renderSuppliersList(container);
-          },
+            if (onSaved) onSaved(null); else renderSuppliersList(container);
+          }),
         },
         {
           label: isEdit ? 'تم' : 'تم', className: 'btn-primary',
-          onClick: async (c) => {
-            await persist();
+          onClick: guarded(async (c) => {
+            const saved = await persist();
             if (!recordId) { toast('اسم المورد مطلوب', 'error'); return; }
             toast(isEdit ? 'تم الحفظ' : 'تمت إضافة المورد', 'success');
             c();
-            if (onSaved) onSaved(); else renderSuppliersList(container);
-          },
+            // Callers (the invoice-review screen) need the record that was
+            // just saved so they can select it — this used to call back with
+            // nothing, so "add this supplier" never linked the new supplier.
+            if (onSaved) onSaved(saved); else renderSuppliersList(container);
+          }),
         },
       ],
     });
 
     async function persist() {
       const name = qs('#f-name', node).value.trim();
-      if (!name) return;
+      if (!name) return null;
       const record = {
         id: recordId || uid(),
         name,
@@ -142,6 +145,7 @@ export function openSupplierForm(container, supplierId, onSaved) {
         recordId = record.id;
         await logAction('إضافة مورد', 'supplier', recordId, name);
       }
+      return record;
     }
 
     const statusEl = qs('#sup-status', node);
@@ -212,7 +216,7 @@ export async function renderSupplierDetail(container, supplierId) {
       : `سيتم حذف المورد "${supplier.name}" نهائيًا. هل أنت متأكد؟`;
     const ok = await confirmDialog(message, { danger: true, okLabel: 'حذف المورد' });
     if (!ok) return;
-    for (const item of items) await deleteSupplierItem(item.id);
+    await Promise.all(items.map(item => deleteSupplierItem(item.id)));
     await remove('suppliers', supplierId);
     await logAction('حذف مورد', 'supplier', supplierId, supplier.name);
     toast('تم حذف المورد', 'success');
