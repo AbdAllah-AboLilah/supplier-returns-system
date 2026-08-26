@@ -311,6 +311,62 @@ export async function deleteReturn(returnId) {
   await logAction('حذف مرتجعة', 'return', returnId, '');
 }
 
+// A line's cost is frozen when it is added, so that changing a price later
+// never rewrites a return that has already gone out. The flip side is that
+// a draft you are still building keeps whatever the price was when you
+// typed it — these pull the current supplier cost back onto the lines, on
+// demand and only where the return is still editable.
+export async function refreshLineCost(lineId) {
+  const line = await loadLine(lineId);
+  const si = await getById('supplierItems', line.supplierItemId);
+  if (!si) throw new Error('الصنف ده مش موجود في أصناف المورد — يمكن يكون اتحذف.');
+  const nextCost = Number(si.currentCost) || 0;
+  const from = Number(line.unitCost) || 0;
+  if (nextCost === from && !line.costIsFallback) return { changed: false, from, to: nextCost };
+
+  line.unitCost = nextCost;
+  line.costIsFallback = false; // an explicit refresh is a confirmed price
+  line.total = (Number(line.qty) || 0) * nextCost;
+  await put('returnItems', line);
+  getById('returns', line.returnId).then(ret => { if (ret) touchReturn(ret); }).catch(err => console.error('touchReturn failed:', err));
+  logAction('تحديث تكلفة صنف في المرتجعة', 'return', line.returnId, `${line.supplierItemName}: ${fmtMoney(from)} ← ${fmtMoney(nextCost)}`).catch(err => console.error('audit log failed:', err));
+  return { changed: true, from, to: nextCost };
+}
+
+// How many lines a refresh would actually move, so the confirmation can
+// say so — and so a return that is already up to date says nothing changed.
+async function currentCostByItemId() {
+  // Keyed by the supplier item a line actually points at, not by the
+  // return's supplier: the line names its item directly, and reaching for
+  // it through a supplier index would quietly skip any line whose item
+  // does not appear there.
+  const items = await getAll('supplierItems');
+  return Object.fromEntries(items.map(si => [si.id, Number(si.currentCost) || 0]));
+}
+
+export async function pendingCostRefreshes(returnId) {
+  const [lines, costById] = await Promise.all([getReturnItems(returnId), currentCostByItemId()]);
+  return lines.filter(l => {
+    const current = costById[l.supplierItemId];
+    if (current === undefined) return false; // the supplier item is gone; leave the line alone
+    return current !== (Number(l.unitCost) || 0) || l.costIsFallback;
+  });
+}
+
+export async function refreshAllLineCosts(returnId) {
+  const [stale, costById] = await Promise.all([pendingCostRefreshes(returnId), currentCostByItemId()]);
+  if (!stale.length) return 0;
+
+  const updated = stale.map(l => {
+    const nextCost = costById[l.supplierItemId];
+    return { ...l, unitCost: nextCost, costIsFallback: false, total: (Number(l.qty) || 0) * nextCost };
+  });
+  await bulkPut('returnItems', updated);
+  getById('returns', returnId).then(ret => { if (ret) touchReturn(ret); }).catch(err => console.error('touchReturn failed:', err));
+  logAction('تحديث تكلفة أصناف المرتجعة', 'return', returnId, `${updated.length} صنف`).catch(err => console.error('audit log failed:', err));
+  return updated.length;
+}
+
 // The detail screen deliberately does NOT re-render when a quantity or
 // cost is edited — that was the whole point of making editing fast. So
 // the `lines` array a screen was drawn with goes stale the moment you
@@ -556,7 +612,13 @@ export async function renderReturnDetail(container, returnId) {
     ` : ''}
 
     <div class="card mb-16">
-      <div class="card-header"><h3>الأصناف</h3><span class="small text-dim">${fmtInt(lines.length)} صنف · حفظ تلقائي أثناء الكتابة</span></div>
+      <div class="card-header">
+        <h3>الأصناف</h3>
+        <div class="flex items-center gap-8" style="flex-wrap:wrap;">
+          ${editable && lines.length ? `<button class="btn btn-sm btn-ghost" id="btn-refresh-costs" title="يجيب أحدث تكلفة من أصناف المورد لكل الأصناف اللي في المرتجعة دي">↻ تحديث التكلفة</button>` : ''}
+          <span class="small text-dim">${fmtInt(lines.length)} صنف · حفظ تلقائي أثناء الكتابة</span>
+        </div>
+      </div>
       ${lines.length ? `
       <table class="data-table">
         <thead><tr>
@@ -569,7 +631,10 @@ export async function renderReturnDetail(container, returnId) {
               <td data-label="صنف النظام ERP">${l.erpItemName ? escapeHtml(l.erpItemName) : `<span class="badge badge-warn">⚠️ غير مرتبط</span> <button class="btn btn-sm btn-ghost btn-link-erp" data-supplier-item-id="${l.supplierItemId}">ربط</button>`}</td>
               <td class="num" data-label="الكمية">${editable ? `<input type="number" min="0" step="1" class="line-qty" data-id="${l.id}" value="${l.qty}" style="width:80px;text-align:center;">` : fmtInt(l.qty)}</td>
               <td class="num" data-label="تكلفة المورد">${editable
-                ? `<input type="number" min="0" step="0.01" class="line-cost ${l.costIsFallback ? 'cost-fallback' : ''}" data-id="${l.id}" value="${l.unitCost}" title="${l.costIsFallback ? 'تكلفة النظام الافتراضية — لسه محدّدتش تكلفة هذا المورد الفعلية' : ''}" style="width:100px;text-align:center;">`
+                ? `<span class="cost-cell">
+                     <input type="number" min="0" step="0.01" class="line-cost ${l.costIsFallback ? 'cost-fallback' : ''}" data-id="${l.id}" value="${l.unitCost}" title="${l.costIsFallback ? 'تكلفة النظام الافتراضية — لسه محدّدتش تكلفة هذا المورد الفعلية' : ''}" style="width:100px;text-align:center;">
+                     <button class="btn btn-sm btn-ghost line-refresh-cost" data-id="${l.id}" title="يجيب أحدث تكلفة للصنف ده من أصناف المورد">↻</button>
+                   </span>`
                 : `<span class="${l.costIsFallback ? 'cost-fallback-text' : ''}" title="${l.costIsFallback ? 'تكلفة النظام الافتراضية — لسه محدّدتش تكلفة هذا المورد الفعلية' : ''}">${fmtMoney(l.unitCost)}</span>`}</td>
               <td class="num text-mono" id="line-total-${l.id}" data-label="الإجمالي">${fmtMoney(l.total)}</td>
               <td data-label="نوع المعالجة">
@@ -732,6 +797,25 @@ function wireDetailEvents(container, ret, lines, supplier) {
     inp.title = '';
     recalcRowAndTotals(container, inp.dataset.id);
   }, { delay: 500 })));
+  qsa('.line-refresh-cost', container).forEach(b => b.addEventListener('click', submitOnce(b, async () => {
+    const { changed, from, to } = await refreshLineCost(b.dataset.id);
+    toast(changed ? `التكلفة اتحدّثت من ${fmtMoney(from)} لـ ${fmtMoney(to)}` : 'التكلفة محدّثة بالفعل', changed ? 'success' : 'default');
+    if (changed) await renderReturnDetail(container, ret.id);
+  }, { busyLabel: '…' })));
+
+  const refreshCostsButton = qs('#btn-refresh-costs', container);
+  refreshCostsButton?.addEventListener('click', submitOnce(refreshCostsButton, async () => {
+    const stale = await pendingCostRefreshes(ret.id);
+    if (!stale.length) { toast('كل التكاليف محدّثة بالفعل', 'default'); return; }
+    const ok = await confirmDialog(
+      `هيتم تحديث تكلفة ${stale.length} صنف في المرتجعة دي من أحدث تكلفة في أصناف المورد. الأصناف اللي تكلفتها محدّثة مش هتتغير.`,
+      { okLabel: 'تحديث التكلفة' });
+    if (!ok) return;
+    const count = await refreshAllLineCosts(ret.id);
+    toast(`تم تحديث تكلفة ${count} صنف`, 'success');
+    await renderReturnDetail(container, ret.id);
+  }, { busyLabel: 'جارِ التحديث...' }));
+
   qsa('.line-remove', container).forEach(b => b.addEventListener('click', guarded(async () => {
     await removeLine(b.dataset.id);
     renderReturnDetail(container, ret.id);

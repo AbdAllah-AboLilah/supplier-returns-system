@@ -657,6 +657,87 @@ try {
   check('clicking add twice on an invoice adds one line', doubleClicks.invoice === 1, `added ${doubleClicks.invoice}`);
   check('clicking add twice on a return adds one line', doubleClicks.return === 1, `added ${doubleClicks.return}`);
 
+  // ---------- one name at a supplier is one price ----------
+  const sharedCost = await page.evaluate(async () => {
+    const { getOrCreateSupplierItem, updateCost } = await import('/js/modules/supplier-items.js');
+    const db = await import('/js/core/db.js');
+    const name = 'حجاب سوري';
+    const white = await getOrCreateSupplierItem('s1', name, { erpItemId: 'e20' });
+    const black = await getOrCreateSupplierItem('s1', name, { erpItemId: 'e21' });
+
+    // Change it on one; the other has to follow, because the supplier
+    // quotes one price for the name whatever the shop files it under.
+    const { updatedCount } = await updateCost(white.id, 40);
+    const after = await Promise.all([db.getById('supplierItems', white.id), db.getById('supplierItems', black.id)]);
+
+    // A row added later under the same name starts on that same price.
+    const third = await getOrCreateSupplierItem('s1', name, { erpItemId: 'e22' });
+    return {
+      separate: white.id !== black.id,
+      costs: after.map(r => r.currentCost),
+      updatedCount,
+      newRowCost: third.currentCost,
+    };
+  });
+  check('two ERP links under one supplier name share a price',
+        sharedCost.separate && sharedCost.costs.every(c => c === 40) && sharedCost.updatedCount === 2,
+        JSON.stringify(sharedCost));
+  check('a row added later inherits that price', sharedCost.newRowCost === 40, `cost=${sharedCost.newRowCost}`);
+
+  // ---------- pulling a new supplier cost onto a draft's lines ----------
+  const refresh = await page.evaluate(async () => {
+    const { pendingCostRefreshes, refreshAllLineCosts, refreshLineCost } = await import('/js/modules/returns.js');
+    const db = await import('/js/core/db.js');
+    const lines = await db.getByIndex('returnItems', 'returnId', 'r13');
+    for (const line of lines) {
+      const si = await db.getById('supplierItems', line.supplierItemId);
+      await db.put('supplierItems', { ...si, currentCost: 250 });
+    }
+
+    const stale = await pendingCostRefreshes('r13');
+    // One line first, to prove the per-line button moves only its own row.
+    const one = await refreshLineCost(lines[0].id);
+    const afterOne = await db.getByIndex('returnItems', 'returnId', 'r13');
+    const movedByOne = afterOne.filter(l => Number(l.unitCost) === 250).length;
+
+    const count = await refreshAllLineCosts('r13');
+    const after = await db.getByIndex('returnItems', 'returnId', 'r13');
+    const nothingLeft = await pendingCostRefreshes('r13');
+
+    return {
+      staleCount: stale.length,
+      one,
+      movedByOne,
+      count,
+      costs: after.map(l => Number(l.unitCost)),
+      totals: after.map(l => Number(l.total) === Number(l.qty) * 250),
+      nothingLeft: nothingLeft.length,
+    };
+  });
+  check('refreshing one line moves only that line',
+        refresh.one.changed && refresh.movedByOne === 1, JSON.stringify({ one: refresh.one, moved: refresh.movedByOne }));
+  check('refreshing all lines pulls every cost from the supplier item',
+        refresh.costs.every(c => c === 250) && refresh.totals.every(Boolean) && refresh.count === refresh.staleCount - 1,
+        JSON.stringify(refresh));
+  check('a return already up to date has nothing to refresh', refresh.nothingLeft === 0);
+
+  // The buttons only exist while the return can still be edited.
+  await goto('/returns/r13');
+  await page.waitForTimeout(900);
+  const draftButtons = await page.evaluate(() => ({
+    bulk: !!document.querySelector('#btn-refresh-costs'),
+    perLine: document.querySelectorAll('.line-refresh-cost').length,
+  }));
+  await goto('/returns/r14'); // sent, so locked
+  await page.waitForTimeout(900);
+  const sentButtons = await page.evaluate(() => ({
+    bulk: !!document.querySelector('#btn-refresh-costs'),
+    perLine: document.querySelectorAll('.line-refresh-cost').length,
+  }));
+  check('the refresh buttons are on an editable return and off a sent one',
+        draftButtons.bulk && draftButtons.perLine === 3 && !sentButtons.bulk && sentButtons.perLine === 0,
+        `draft=${JSON.stringify(draftButtons)} sent=${JSON.stringify(sentButtons)}`);
+
   check('no console or page errors', pageErrors.length === 0, pageErrors.slice(0, 3).join(' | '));
 } catch (err) {
   check('suite ran to completion', false, err.message.split('\n')[0]);

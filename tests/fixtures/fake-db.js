@@ -123,20 +123,23 @@ for (let i = 1; i <= 60; i++) {
 
 for (let i = 1; i <= 70; i++) {
   const id = 'r' + i;
+  const supplierId = 's' + ((i % 3) + 1);
   // i % 3 === 1 -> draft (editable), 2 -> sent (locked), 0 -> closed
   const status = i % 3 === 1 ? 'draft' : i % 3 === 2 ? 'sent' : 'closed';
   store('returns').set(id, {
-    id, returnNumber: `RET-2026-${String(i).padStart(5, '0')}`, supplierId: 's' + ((i % 3) + 1),
+    id, returnNumber: `RET-2026-${String(i).padStart(5, '0')}`, supplierId,
     status, locked: status !== 'draft', editingUnlocked: status === 'sent' && i % 11 === 0,
     notes: '', createdAt: iso(`2026-0${(i % 8) + 1}-15`), updatedAt: iso('2026-08-01'),
     sentAt: status === 'draft' ? null : iso('2026-07-01'), lastPostSendEditAt: null,
     erpRegistered: i % 4 === 0, erpRegisteredAt: null, erpTransactionNumber: '',
   });
+  const ownItems = [...store('supplierItems').values()].filter(si => si.supplierId === supplierId);
   for (let j = 1; j <= 3; j++) {
     const lineId = `${id}-l${j}`;
-    const siIndex = ((i + j) % 60) + 1;
+    const own = ownItems[(i + j) % ownItems.length];
+    const siIndex = Number(own.id.slice(2));
     store('returnItems').set(lineId, {
-      id: lineId, returnId: id, supplierItemId: 'si' + siIndex, supplierItemName: `كريب سادة ${siIndex}`,
+      id: lineId, returnId: id, supplierItemId: own.id, supplierItemName: own.supplierItemName,
       erpItemId: 'e' + siIndex, erpItemName: `صنف ERP رقم ${siIndex}`,
       qty: j * 2, unitCost: j * 10, total: j * 2 * j * 10, costIsFallback: j === 3,
       resolutionType: j === 2 ? 'exchange' : 'credit', replacementReceived: false, replacementReceivedAt: null,
@@ -153,8 +156,9 @@ store('returns').set('rbig', {
   locked: false, editingUnlocked: false, notes: '', createdAt: iso('2026-08-01'), updatedAt: iso('2026-08-01'),
   sentAt: null, lastPostSendEditAt: null, erpRegistered: false, erpRegisteredAt: null, erpTransactionNumber: '',
 });
+const bigSupplierItems = [...store('supplierItems').values()].filter(si => si.supplierId === 's1');
 for (let j = 1; j <= 25; j++) {
-  const si = store('supplierItems').get('si' + (j * 2));
+  const si = bigSupplierItems[j % bigSupplierItems.length];
   store('returnItems').set('rbig-l' + j, {
     id: 'rbig-l' + j, returnId: 'rbig', supplierItemId: si.id, supplierItemName: si.supplierItemName,
     erpItemId: si.erpItemId, erpItemName: si.erpItemId ? `صنف ERP رقم ${si.erpItemId.slice(1)}` : null,

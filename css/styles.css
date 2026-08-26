@@ -582,3 +582,8 @@ textarea{ resize:vertical; min-height:70px; }
 /* Stat cards on the dashboard navigate to the screen behind the number. */
 .stat-card.clickable{ cursor:pointer; transition:border-color .12s ease, box-shadow .12s ease; }
 .stat-card.clickable:hover{ border-color:var(--line-strong); box-shadow:var(--shadow-2); }
+
+/* Cost cell on an editable return: the amount plus its refresh button,
+   kept on one line so the stacked mobile layout does not split them. */
+.cost-cell{ display:inline-flex; align-items:center; gap:6px; }
+.cost-cell .line-refresh-cost{ padding:4px 8px; line-height:1; }

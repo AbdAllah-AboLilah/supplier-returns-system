@@ -9,7 +9,7 @@
 //                     past returns keep the cost they were made
 //                     with even after the price changes.
 // =========================================================
-import { getAll, getById, getByIndex, put, remove, removeWhere } from '../core/db.js';
+import { getAll, getById, getByIndex, put, bulkPut, remove, removeWhere } from '../core/db.js';
 import { uid, nowIso, fmtMoney, fmtInt, fmtDate, escapeHtml, fuzzyIncludes, normalizeArabic, debounce,
          openModal, confirmDialog, toast, qs, closeOnOutsideClick, guarded, submitOnce } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
@@ -41,10 +41,14 @@ export async function searchSupplierItems(supplierId, query, limit = 8) {
   });
 }
 
-async function createSupplierItem(supplierId, name, erpItemId = null) {
+async function createSupplierItem(supplierId, name, erpItemId = null, sharedCost = 0) {
   const record = {
     id: uid(), supplierId, supplierItemName: name.trim(),
-    erpItemId: erpItemId || null, currentCost: 0,
+    erpItemId: erpItemId || null,
+    // A new row under a name that already has a price starts on that
+    // price — it is the same thing from the supplier, just filed
+    // against a different ERP item.
+    currentCost: Number(sharedCost) || 0,
     createdAt: nowIso(), updatedAt: nowIso(),
   };
   await put('supplierItems', record);
@@ -75,7 +79,8 @@ export async function getOrCreateSupplierItem(supplierId, name, { erpItemId = nu
     // not a different item — the caller links it straight after.
     const unlinked = sameName.find(r => !r.erpItemId);
     if (unlinked) return unlinked;
-    return createSupplierItem(supplierId, name, erpItemId);
+    const sharedCost = sameName.find(r => Number(r.currentCost) > 0)?.currentCost || 0;
+    return createSupplierItem(supplierId, name, erpItemId, sharedCost);
   }
 
   if (sameName.length > 1) {
@@ -106,6 +111,16 @@ export async function unlinkErpItem(supplierItemId) {
   return row;
 }
 
+// Every row a supplier sells under one name. The name can be linked to
+// several ERP items — حجاب سوري filed as أبيض and أسود — but the supplier
+// still quotes one price for it, so those rows share a cost.
+export async function costSiblings(row) {
+  const rows = await listBySupplier(row.supplierId);
+  const target = normalizeArabic(row.supplierItemName);
+  const matches = rows.filter(r => normalizeArabic(r.supplierItemName) === target);
+  return matches.length ? matches : [row];
+}
+
 export async function updateCost(supplierItemId, newCost, preloaded = null) {
   // Cost edits happen constantly while filling in a return, so this is
   // the hottest write path in the app — every extra round trip here is
@@ -117,16 +132,27 @@ export async function updateCost(supplierItemId, newCost, preloaded = null) {
   if (!row) throw new Error('الصنف ده مش موجود — يمكن يكون اتحذف من جهاز تاني.');
   const oldCost = Number(row.currentCost) || 0;
   const nextCost = Number(newCost) || 0;
-  // Saving the same number again is not a price change: it used to
-  // still cost a write *and* append a meaningless row to the cost
-  // history (so a history could fill up with the same figure repeated).
-  if (oldCost === nextCost) return row;
-  row.currentCost = nextCost;
-  row.updatedAt = nowIso();
-  await put('supplierItems', row);
-  put('costHistory', { id: uid(), supplierItemId, cost: row.currentCost, effectiveFrom: nowIso(), createdAt: nowIso() }).catch(err => console.error('cost history write failed:', err));
-  logAction('تحديث تكلفة المورد', 'supplierItem', supplierItemId, `${row.supplierItemName}: ${fmtMoney(oldCost)} ← ${fmtMoney(row.currentCost)}`).catch(err => console.error('audit log failed:', err));
-  return row;
+
+  // One name at one supplier is one price: changing it on any of the rows
+  // that share the name changes it on all of them.
+  const siblings = await costSiblings(row);
+  // Saving the same number again is not a price change: it used to still
+  // cost a write *and* append a meaningless row to the cost history (so a
+  // history could fill up with the same figure repeated).
+  const changed = siblings.filter(r => (Number(r.currentCost) || 0) !== nextCost);
+  if (!changed.length) return { item: row, updatedCount: 0 };
+
+  const stamp = nowIso();
+  const updated = changed.map(r => ({ ...r, currentCost: nextCost, updatedAt: stamp }));
+  await bulkPut('supplierItems', updated);
+  bulkPut('costHistory', updated.map(r => ({
+    id: uid(), supplierItemId: r.id, cost: nextCost, effectiveFrom: stamp, createdAt: stamp,
+  }))).catch(err => console.error('cost history write failed:', err));
+  logAction('تحديث تكلفة المورد', 'supplierItem', supplierItemId,
+    `${row.supplierItemName}: ${fmtMoney(oldCost)} ← ${fmtMoney(nextCost)}${updated.length > 1 ? ` (${updated.length} أصناف بنفس الاسم)` : ''}`)
+    .catch(err => console.error('audit log failed:', err));
+
+  return { item: updated.find(r => r.id === row.id) || updated[0], updatedCount: updated.length };
 }
 
 export async function getCostHistory(supplierItemId) {
@@ -450,12 +476,17 @@ export function openLinkModal(supplierItemId, onDone) {
 }
 
 function openCostModal(supplierItemId, onDone) {
-  Promise.all([getById('supplierItems', supplierItemId), getUnits()]).then(([row, units]) => {
+  getById('supplierItems', supplierItemId).then(async (row) => {
     if (!row) { toast('الصنف ده مش موجود — يمكن يكون اتحذف من جهاز تاني.', 'error'); return; }
+    const [units, siblings] = await Promise.all([getUnits(), costSiblings(row)]);
+    const sharedWith = siblings.length - 1;
     const { node } = openModal({
       title: `تكلفة "${row.supplierItemName}"`,
       bodyHtml: `
         ${costUnitFieldsHtml(units, { label: 'التكلفة الحالية', value: row.currentCost })}
+        ${sharedWith > 0 ? `<div class="hint" style="color:var(--gold-dark);font-weight:700;">
+          التكلفة دي مشتركة مع ${sharedWith} صنف تاني بنفس الاسم عند المورد (مربوطين بأصناف ERP مختلفة) — التغيير هيطبّق عليهم كلهم.
+        </div>` : ''}
         <div class="hint">لو المورد مسعّر بالدستة، اختار "دستة" واكتب سعر الدستة — النظام هيحسب سعر القطعة ويحفظه.</div>
         <div class="hint">تحديث التكلفة يبدأ سريانه من الآن فقط. المرتجعات السابقة تحتفظ بالتكلفة وقت إنشائها ولا تتأثر.</div>
       `,
@@ -468,8 +499,8 @@ function openCostModal(supplierItemId, onDone) {
             if (cost === '') { toast('اكتب التكلفة أولًا', 'error'); return; }
             const button = qs('.modal-footer .btn-primary', node);
             await submitOnce(button, async () => {
-              await updateCost(supplierItemId, cost);
-              toast('تم تحديث التكلفة', 'success');
+              const { updatedCount } = await updateCost(supplierItemId, cost);
+              toast(updatedCount > 1 ? `تم تحديث التكلفة في ${updatedCount} أصناف بنفس الاسم` : 'تم تحديث التكلفة', 'success');
               c(); onDone();
             })();
           },
