@@ -578,3 +578,7 @@ textarea{ resize:vertical; min-height:70px; }
 }
 .update-stuck .small{ color:#C9D0DE; font-size:12px; margin-top:2px; }
 .update-stuck button{ margin-inline-start:auto; white-space:nowrap; }
+
+/* Stat cards on the dashboard navigate to the screen behind the number. */
+.stat-card.clickable{ cursor:pointer; transition:border-color .12s ease, box-shadow .12s ease; }
+.stat-card.clickable:hover{ border-color:var(--line-strong); box-shadow:var(--shadow-2); }

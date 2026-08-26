@@ -89,7 +89,14 @@ export async function listReturnsJoined() {
     const total = items.reduce((s, i) => s + (Number(i.total) || 0), 0);
     const hasCreditLines = items.some(i => i.resolutionType !== 'exchange');
     const hasExchangeLines = items.some(i => i.resolutionType === 'exchange');
-    return { ...r, supplierName: supplierById[r.supplierId]?.name || '—', itemCount: items.length, total, hasCreditLines, hasExchangeLines };
+    // Exchange lines that are still waiting on the supplier to send the
+    // sound goods back. This is real outstanding work, the same way an
+    // unregistered credit is, so callers can surface it as one.
+    const pendingReplacements = items.filter(i => i.resolutionType === 'exchange' && !i.replacementReceived).length;
+    return {
+      ...r, supplierName: supplierById[r.supplierId]?.name || '—',
+      itemCount: items.length, total, hasCreditLines, hasExchangeLines, pendingReplacements,
+    };
   });
 }
 

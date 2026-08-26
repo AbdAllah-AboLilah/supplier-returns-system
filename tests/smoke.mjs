@@ -315,6 +315,67 @@ try {
   check('switching to pieces makes the typed price the piece price',
         asPieces.piece === '—' && asPieces.actual.startsWith('2'), JSON.stringify(asPieces));
 
+  // ---------- dashboard numbers agree with the screens they name ----------
+  await goto('/dashboard');
+  await page.waitForTimeout(900);
+  const dash = await page.evaluate(() => {
+    const cards = {};
+    document.querySelectorAll('.stat-card').forEach(c => {
+      cards[c.querySelector('.stat-label').textContent.trim()] = Number(c.querySelector('.stat-value').textContent.replace(/[^\d]/g, ''));
+    });
+    const actions = Array.from(document.querySelectorAll('.action-item')).map(a => ({
+      label: a.textContent.replace(/\s+/g, ' ').trim(),
+      count: a.querySelector('.count') ? Number(a.querySelector('.count').textContent.replace(/[^\d]/g, '')) : null,
+      route: a.dataset.route || null,
+    }));
+    return { cards, actions, html: document.querySelector('#app-content').textContent };
+  });
+
+  // "closed" is what the archive button sets, so the card has to say archive.
+  check('the archive count is not labelled "completed"',
+        !dash.html.includes('مرتجعات مكتملة') && 'مرتجعات مؤرشفة' in dash.cards,
+        Object.keys(dash.cards).join(' | '));
+
+  const readTotal = async (route) => {
+    await goto(route);
+    await page.waitForTimeout(700);
+    return page.evaluate(() => Number((document.querySelector('.page-info b')?.textContent || '0').replace(/[^\d]/g, '')));
+  };
+  const archivedOnList = await readTotal('/returns/archive');
+  check('archived card matches the archive screen', dash.cards['مرتجعات مؤرشفة'] === archivedOnList,
+        `dashboard=${dash.cards['مرتجعات مؤرشفة']} list=${archivedOnList}`);
+
+  const unregOnList = await readTotal('/returns/unregistered');
+  const unregAction = dash.actions.find(a => a.label.includes('لم تُسجل على ERP'));
+  check('the ERP action count matches the unregistered screen', unregAction && unregAction.count === unregOnList,
+        `dashboard=${unregAction?.count} list=${unregOnList}`);
+
+  // Waiting on replacement goods is real outstanding work and had no home here.
+  const replacementAction = dash.actions.find(a => a.label.includes('البدائل'));
+  const expectedWaiting = await page.evaluate(async () => {
+    const { listReturnsJoined } = await import('/js/modules/returns.js');
+    return (await listReturnsJoined()).filter(r => r.status === 'sent' && r.pendingReplacements > 0).length;
+  });
+  check('pending replacements are surfaced and counted right',
+        replacementAction && replacementAction.count === expectedWaiting && expectedWaiting > 0,
+        `shown=${replacementAction?.count} expected=${expectedWaiting}`);
+
+  // "Needs action" must only list things that actually need action.
+  check('every action row is non-zero and leads somewhere',
+        dash.actions.every(a => a.count === null || (a.count > 0 && a.route)),
+        JSON.stringify(dash.actions.map(a => [a.count, a.route])));
+
+  // Repeated renders with unchanged data must not churn the DOM.
+  await goto('/dashboard');
+  await page.waitForTimeout(800);
+  const stable = await page.evaluate(async () => {
+    const node = document.querySelector('#dash-recent');
+    const { renderDashboard } = await import('/js/modules/dashboard.js');
+    await renderDashboard(document.querySelector('#app-content'));
+    return document.querySelector('#dash-recent') === node;
+  });
+  check('an unchanged dashboard is not re-rendered', stable);
+
   check('no console or page errors', pageErrors.length === 0, pageErrors.slice(0, 3).join(' | '));
 } catch (err) {
   check('suite ran to completion', false, err.message.split('\n')[0]);
