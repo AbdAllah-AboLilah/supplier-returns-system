@@ -43,9 +43,20 @@ async function generateReviewNumber() {
 
 function computeLine(item, units) {
   const unit = units.find(u => u.key === item.unitKey) || units[0] || DEFAULT_UNITS[0];
+  const multiplier = Number(unit?.multiplier) || 1;
   const qty = Number(item.qty) || 0;
   const price = Number(item.price) || 0;
-  return { unit, qty, price, actualQty: qty * (unit?.multiplier || 1), total: qty * price };
+  return {
+    unit, qty, price, multiplier,
+    actualQty: qty * multiplier,
+    // The price is entered per whichever unit is selected, so the unit
+    // decides what it means: pick "قطعة" and it is already the piece
+    // price; pick "دستة" and it is a dozen price, which divided by 12
+    // gives the per-piece cost — the figure this whole tool exists to
+    // work out while sitting with the supplier.
+    piecePrice: price / multiplier,
+    total: qty * price,
+  };
 }
 
 // ---------- Arabic number → words (ported as-is from the original tool) ----------
@@ -326,7 +337,14 @@ export async function renderInvoiceReviewsList(container) {
 export async function renderInvoiceReviewDetail(container, reviewId) {
   const review = await getById('invoiceReviews', reviewId);
   if (!review) { container.innerHTML = `<div class="card card-pad">المراجعة غير موجودة.</div>`; return; }
-  const [items, suppliers, units] = await Promise.all([getReviewItems(reviewId), getAll('suppliers'), getUnits()]);
+  const [rawItems, suppliers, units, erpItems] = await Promise.all([
+    getReviewItems(reviewId), getAll('suppliers'), getUnits(), getAll('erpItems'),
+  ]);
+  // A review line stores which ERP item it maps to, not that item's
+  // barcode — resolve it here so the export can offer it as a column
+  // without storing a copy that goes stale when a barcode is corrected.
+  const barcodeById = Object.fromEntries(erpItems.map(i => [i.id, i.barcode || '']));
+  const items = rawItems.map(i => ({ ...i, erpBarcode: i.erpItemId ? (barcodeById[i.erpItemId] || '') : '' }));
   const totalQty = items.reduce((s, i) => s + computeLine(i, units).actualQty, 0);
   const totalValue = items.reduce((s, i) => s + computeLine(i, units).total, 0);
 
@@ -372,7 +390,7 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
       <div class="card-header"><h3>أصناف الفاتورة</h3><span class="small text-dim">${fmtInt(items.length)} صنف · حفظ تلقائي أثناء الكتابة</span></div>
       ${items.length ? `
       <table class="data-table">
-        <thead><tr><th>الصنف</th><th class="num">الكمية</th><th>الوحدة</th><th class="num">السعر</th><th class="num">الكمية الفعلية</th><th class="num">الإجمالي</th><th></th></tr></thead>
+        <thead><tr><th>الصنف</th><th class="num">الكمية</th><th>الوحدة</th><th class="num">سعر الوحدة</th><th class="num">سعر القطعة</th><th class="num">الكمية الفعلية</th><th class="num">الإجمالي</th><th></th></tr></thead>
         <tbody>
           ${items.map(i => {
             const c = computeLine(i, units);
@@ -385,7 +403,8 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
                   ${units.map(u => `<option value="${u.key}" ${i.unitKey === u.key ? 'selected' : ''}>${escapeHtml(u.label)}</option>`).join('')}
                 </select>
               </td>
-              <td class="num" data-label="السعر"><input type="number" min="0" step="0.01" class="ln-price" data-id="${i.id}" value="${i.price}" style="width:90px;text-align:center;"></td>
+              <td class="num" data-label="سعر الوحدة"><input type="number" min="0" step="0.01" class="ln-price" data-id="${i.id}" value="${i.price}" style="width:90px;text-align:center;"></td>
+              <td class="num" id="ln-piece-${i.id}" data-label="سعر القطعة">${c.multiplier === 1 ? '<span class="text-dim">—</span>' : `<b>${fmtMoney(c.piecePrice)}</b>`}</td>
               <td class="num text-dim" id="ln-actual-${i.id}" data-label="الكمية الفعلية">${fmtInt(c.actualQty)} قطعة</td>
               <td class="num text-mono" id="ln-total-${i.id}" data-label="الإجمالي">${fmtMoney(c.total)}</td>
               <td><button class="btn btn-sm btn-ghost ln-remove" data-id="${i.id}">حذف</button></td>
@@ -394,7 +413,7 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
         </tbody>
         <tfoot>
           <tr>
-            <td colspan="4"><b>الإجمالي</b></td>
+            <td colspan="5"><b>الإجمالي</b></td>
             <td class="num text-mono" id="footer-qty">${fmtInt(totalQty)} قطعة</td>
             <td class="num text-mono" id="footer-total"><b>${fmtMoney(totalValue)}</b></td>
             <td></td>
@@ -415,17 +434,24 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
             <div class="field-label-row"><label style="margin:0;">الوحدة</label><a href="#" id="btn-manage-units" class="small">إدارة الوحدات</a></div>
             <select id="add-unit">${units.map(u => `<option value="${u.key}">${escapeHtml(u.label)}</option>`).join('')}</select>
           </div>
-          <div class="field" style="flex:0 0 110px;"><label>السعر</label><input type="number" id="add-price" min="0" step="0.01" placeholder="0.00"></div>
+          <div class="field" style="flex:0 0 130px;"><label id="add-price-label">سعر الوحدة</label><input type="number" id="add-price" min="0" step="0.01" placeholder="0.00"></div>
           <div class="field" style="flex:0 0 auto;"><button class="btn btn-primary" id="btn-add-line">+ إضافة</button></div>
         </div>
       </div>
     </div>
 
-    <div class="card card-pad flex gap-8" style="flex-wrap:wrap;">
-      <button class="btn btn-ghost" id="btn-copy">📋 نسخ كنص</button>
-      <button class="btn btn-ghost" id="btn-img">🖼 تنزيل كصورة</button>
-      <button class="btn btn-ghost" id="btn-whatsapp">📱 واتساب</button>
-      <button class="btn btn-ghost" id="btn-print">🖨 طباعة</button>
+    <div class="card card-pad">
+      <div class="section-title">تصدير</div>
+      <label class="export-col-toggle">
+        <input type="checkbox" id="exp-barcode"> إضافة عمود الباركود
+      </label>
+      <div class="hint">مقفول افتراضيًا — علّم عليه لما تحتاج الباركود في النسخة اللي هتطلعها.</div>
+      <div class="flex gap-8" style="flex-wrap:wrap;margin-top:12px;">
+        <button class="btn btn-ghost" id="btn-copy">📋 نسخ كنص</button>
+        <button class="btn btn-ghost" id="btn-img">🖼 تنزيل كصورة</button>
+        <button class="btn btn-ghost" id="btn-whatsapp">📱 واتساب</button>
+        <button class="btn btn-ghost" id="btn-print">🖨 طباعة</button>
+      </div>
     </div>
   `;
 
@@ -532,6 +558,18 @@ function wireDetailEvents(container, review, items, units, suppliers) {
 
   qs('#btn-manage-units', container).addEventListener('click', (e) => { e.preventDefault(); openUnitsManagerModal(() => renderInvoiceReviewDetail(container, review.id)); });
 
+  // Name the price field after the unit that is actually selected, so it
+  // is never ambiguous whether the number being typed is per piece or
+  // per dozen.
+  const addUnit = qs('#add-unit', container);
+  const addPriceLabel = qs('#add-price-label', container);
+  function syncAddPriceLabel() {
+    const unit = units.find(u => u.key === addUnit.value) || units[0];
+    addPriceLabel.textContent = `سعر ${unit?.label || 'الوحدة'}`;
+  }
+  addUnit.addEventListener('change', syncAddPriceLabel);
+  syncAddPriceLabel();
+
   // Item-name field: search ERP items as you type and link to one on
   // pick. Typing without picking still works — the line is just saved
   // unlinked (⚠️ badge), same pattern as unlinked supplier items elsewhere.
@@ -570,10 +608,11 @@ function wireDetailEvents(container, review, items, units, suppliers) {
     qs('#add-item-name', container)?.focus();
   }));
 
-  qs('#btn-copy', container).addEventListener('click', () => copyReviewText(review, items, units, suppliers));
-  qs('#btn-img', container).addEventListener('click', () => downloadReviewImage(review, items, units, suppliers));
-  qs('#btn-whatsapp', container).addEventListener('click', () => shareReviewImage(review, items, units, suppliers));
-  qs('#btn-print', container).addEventListener('click', () => printReview(review, items, units, suppliers));
+  const withBarcode = () => ({ showBarcode: !!qs('#exp-barcode', container)?.checked });
+  qs('#btn-copy', container).addEventListener('click', () => copyReviewText(review, items, units, suppliers, withBarcode()));
+  qs('#btn-img', container).addEventListener('click', () => downloadReviewImage(review, items, units, suppliers, withBarcode()));
+  qs('#btn-whatsapp', container).addEventListener('click', () => shareReviewImage(review, items, units, suppliers, withBarcode()));
+  qs('#btn-print', container).addEventListener('click', () => printReview(review, items, units, suppliers, withBarcode()));
 }
 
 function recalcLine(container, lineId, units) {
@@ -583,8 +622,11 @@ function recalcLine(container, lineId, units) {
   const price = Number(row.querySelector('.ln-price')?.value) || 0;
   const unitKey = row.querySelector('.ln-unit')?.value;
   const unit = units.find(u => u.key === unitKey) || units[0];
-  const actualQty = qty * (unit?.multiplier || 1);
+  const multiplier = Number(unit?.multiplier) || 1;
+  const actualQty = qty * multiplier;
   const total = qty * price;
+  const pieceCell = qs(`#ln-piece-${lineId}`, container);
+  if (pieceCell) pieceCell.innerHTML = multiplier === 1 ? '<span class="text-dim">—</span>' : `<b>${fmtMoney(price / multiplier)}</b>`;
   const actualCell = qs(`#ln-actual-${lineId}`, container);
   // Keep the unit word — the initial render has it, so without it the
   // cell silently lost "قطعة" the moment you edited the row.
@@ -670,7 +712,7 @@ function openUnitsManagerModal(onDone) {
 
 // ---------- Export: copy / image / WhatsApp / print ----------
 
-function reviewSummaryText(review, items, units, suppliers) {
+function reviewSummaryText(review, items, units, suppliers, { showBarcode = false } = {}) {
   const supplierName = review.supplierId ? (suppliers.find(s => s.id === review.supplierId)?.name || review.supplierName) : (review.supplierName || '—');
   const lines = [`مراجعة فاتورة ${review.reviewNumber}`, `المورد: ${supplierName}`];
   if (review.invoiceNumber) lines.push(`رقم الفاتورة: ${review.invoiceNumber}`);
@@ -678,7 +720,9 @@ function reviewSummaryText(review, items, units, suppliers) {
   items.forEach((i, idx) => {
     const c = computeLine(i, units);
     const namePart = i.itemName ? `${i.itemName} — ` : '';
-    lines.push(`${idx + 1}. ${namePart}الكمية: ${fmtInt(c.qty)} ${c.unit.label} | الكمية الفعلية: ${fmtInt(c.actualQty)} قطعة | السعر: ${fmtMoney(c.price)} | الإجمالي: ${fmtMoney(c.total)}`);
+    const barcodePart = showBarcode ? `باركود: ${i.erpBarcode || '—'} | ` : '';
+    const piecePart = c.multiplier === 1 ? '' : `سعر القطعة: ${fmtMoney(c.piecePrice)} | `;
+    lines.push(`${idx + 1}. ${namePart}${barcodePart}الكمية: ${fmtInt(c.qty)} ${c.unit.label} | الكمية الفعلية: ${fmtInt(c.actualQty)} قطعة | سعر ${c.unit.label}: ${fmtMoney(c.price)} | ${piecePart}الإجمالي: ${fmtMoney(c.total)}`);
   });
   const totalQty = items.reduce((s, i) => s + computeLine(i, units).actualQty, 0);
   const totalValue = items.reduce((s, i) => s + computeLine(i, units).total, 0);
@@ -686,9 +730,9 @@ function reviewSummaryText(review, items, units, suppliers) {
   return lines.join('\n');
 }
 
-async function copyReviewText(review, items, units, suppliers) {
+async function copyReviewText(review, items, units, suppliers, options) {
   try {
-    await navigator.clipboard.writeText(reviewSummaryText(review, items, units, suppliers));
+    await navigator.clipboard.writeText(reviewSummaryText(review, items, units, suppliers, options));
     toast('تم نسخ المراجعة', 'success');
   } catch (err) {
     console.error(err);
@@ -696,31 +740,36 @@ async function copyReviewText(review, items, units, suppliers) {
   }
 }
 
-async function renderReviewToBlob(review, items, units, suppliers) {
+async function renderReviewToBlob(review, items, units, suppliers, { showBarcode = false } = {}) {
   const supplierName = review.supplierId ? (suppliers.find(s => s.id === review.supplierId)?.name || review.supplierName) : (review.supplierName || '—');
   const totalQty = items.reduce((s, i) => s + computeLine(i, units).actualQty, 0);
   const totalValue = items.reduce((s, i) => s + computeLine(i, units).total, 0);
 
   const canvas = await drawReport({
+    width: showBarcode ? 860 : 760, // room for the extra columns
     title: `مراجعة فاتورة ${review.reviewNumber}`,
     subtitle: `${supplierName}${review.invoiceNumber ? ` · فاتورة رقم ${review.invoiceNumber}` : ''}`,
     dateLabel: fmtDate(review.createdAt),
     columns: [
       { key: 'itemName', label: 'الصنف', flex: true, strong: true },
+      ...(showBarcode ? [{ key: 'barcode', label: 'الباركود' }] : []),
       { key: 'qty', label: 'الكمية' },
       { key: 'unit', label: 'الوحدة' },
       { key: 'actualQty', label: 'الكمية الفعلية' },
-      { key: 'price', label: 'السعر' },
+      { key: 'price', label: 'سعر الوحدة' },
+      { key: 'piecePrice', label: 'سعر القطعة' },
       { key: 'total', label: 'الإجمالي' },
     ],
     rows: items.map(i => {
       const c = computeLine(i, units);
       return {
         itemName: i.itemName || '—',
+        barcode: i.erpBarcode || '—',
         qty: fmtInt(c.qty),
         unit: c.unit.label,
         actualQty: `${fmtInt(c.actualQty)} قطعة`,
         price: fmtMoney(c.price),
+        piecePrice: c.multiplier === 1 ? '—' : fmtMoney(c.piecePrice),
         total: fmtMoney(c.total),
       };
     }),
@@ -730,9 +779,9 @@ async function renderReviewToBlob(review, items, units, suppliers) {
   return canvasToBlob(canvas);
 }
 
-async function downloadReviewImage(review, items, units, suppliers) {
+async function downloadReviewImage(review, items, units, suppliers, options) {
   try {
-    const blob = await renderReviewToBlob(review, items, units, suppliers);
+    const blob = await renderReviewToBlob(review, items, units, suppliers, options);
     if (!blob) { toast('تعذّر إنشاء الصورة', 'error'); return; }
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -746,9 +795,9 @@ async function downloadReviewImage(review, items, units, suppliers) {
   }
 }
 
-async function shareReviewImage(review, items, units, suppliers) {
+async function shareReviewImage(review, items, units, suppliers, options) {
   try {
-    const blob = await renderReviewToBlob(review, items, units, suppliers);
+    const blob = await renderReviewToBlob(review, items, units, suppliers, options);
     if (!blob) { toast('تعذّر إنشاء الصورة', 'error'); return; }
     const fileName = `${review.reviewNumber}.png`;
     const file = new File([blob], fileName, { type: 'image/png' });
@@ -771,8 +820,8 @@ async function shareReviewImage(review, items, units, suppliers) {
   }
 }
 
-async function printReview(review, items, units, suppliers) {
-  const text = reviewSummaryText(review, items, units, suppliers);
+async function printReview(review, items, units, suppliers, options) {
+  const text = reviewSummaryText(review, items, units, suppliers, options);
   const html = `
     <!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>${escapeHtml(review.reviewNumber)}</title>
     <style>body{font-family:Tahoma,Arial,sans-serif;padding:16px;white-space:pre-wrap;font-size:14px;line-height:1.6;}</style>

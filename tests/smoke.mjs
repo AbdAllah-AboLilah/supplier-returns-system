@@ -256,6 +256,64 @@ try {
   check('modal suggestions show several rows unclipped',
         dropdown.found && dropdown.items >= 3 && dropdown.height > 120 && !dropdown.clipped,
         JSON.stringify(dropdown));
+  await page.click('.modal-close'); // its backdrop would block every later click
+  await page.waitForTimeout(300);
+
+  // ---------- barcode is an opt-in export column ----------
+  await goto('/returns/r1');
+  await page.waitForTimeout(600);
+  await page.click('#btn-export');
+  await page.waitForTimeout(600);
+  const barcodeToggle = await page.evaluate(() => {
+    const box = document.querySelector('.col-toggle[value="barcode"]');
+    const others = Array.from(document.querySelectorAll('.col-toggle')).filter(c => c.value !== 'barcode');
+    return { exists: !!box, checked: box ? box.checked : null, othersChecked: others.every(c => c.checked), count: others.length + (box ? 1 : 0) };
+  });
+  check('return export offers a barcode column, unticked by default',
+        barcodeToggle.exists && barcodeToggle.checked === false && barcodeToggle.othersChecked,
+        JSON.stringify(barcodeToggle));
+
+  // The barcode itself comes from the linked ERP item, not the line.
+  const resolved = await page.evaluate(async () => {
+    const { attachBarcodes } = await import('/js/modules/return-export.js');
+    const db = await import('/js/core/db.js');
+    const lines = await attachBarcodes(await db.getByIndex('returnItems', 'returnId', 'r1'));
+    return lines.map(l => ({ linked: !!l.erpItemId, barcode: l.erpBarcode }));
+  });
+  check('barcodes resolve from the linked ERP item',
+        resolved.every(l => (l.linked ? /^\d+$/.test(l.barcode) : l.barcode === '')),
+        JSON.stringify(resolved));
+  await page.click('.modal-close');
+  await page.waitForTimeout(300);
+
+  // ---------- the invoice unit decides what the price means ----------
+  // iv2, not iv1: an earlier check edits iv1's quantity.
+  await goto('/invoice-reviews/iv2');
+  await page.waitForTimeout(700);
+  const priced = await page.evaluate(() => ({
+    unit: document.querySelector('.ln-unit')?.value,
+    unitPrice: document.querySelector('.ln-price')?.value,
+    piece: document.querySelector('[id^="ln-piece-"]')?.textContent.trim(),
+    total: document.querySelector('[id^="ln-total-"]')?.textContent.trim(),
+    barcodeBox: (() => { const b = document.querySelector('#exp-barcode'); return b ? b.checked : null; })(),
+  }));
+  // Seeded as 2 dozen at 50 per dozen: 50 / 12 = 4.17 a piece, 100 in total.
+  // The piece price is the assertion that matters — it must not depend on
+  // the quantity at all.
+  check('a dozen price is divided into a piece price',
+        priced.unit === 'dozen' && priced.unitPrice === '50' && priced.piece === '4.17' && priced.total === '100.00',
+        JSON.stringify(priced));
+  check('invoice export offers a barcode column, unticked by default', priced.barcodeBox === false);
+
+  // Switching the unit to pieces makes the typed price the piece price.
+  await page.selectOption('.ln-unit', 'piece');
+  await page.waitForTimeout(800);
+  const asPieces = await page.evaluate(() => ({
+    piece: document.querySelector('[id^="ln-piece-"]')?.textContent.trim(),
+    actual: document.querySelector('[id^="ln-actual-"]')?.textContent.trim(),
+  }));
+  check('switching to pieces makes the typed price the piece price',
+        asPieces.piece === '—' && asPieces.actual.startsWith('2'), JSON.stringify(asPieces));
 
   check('no console or page errors', pageErrors.length === 0, pageErrors.slice(0, 3).join(' | '));
 } catch (err) {

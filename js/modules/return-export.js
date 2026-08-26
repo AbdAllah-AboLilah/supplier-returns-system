@@ -13,12 +13,16 @@
 // to a driver).
 // =========================================================
 import { fmtMoney, fmtInt, fmtDate, escapeHtml, openModal, toast, qs, qsa, printHtmlDocument } from '../core/utils.js';
-import { getSetting } from '../core/db.js';
+import { getSetting, getAll } from '../core/db.js';
 import { drawReport, canvasToBlob } from './report-canvas.js';
 
+// `defaultOff` columns start unticked: the barcode is for matching
+// against ERP internally, not something every report handed to a
+// supplier or a driver should carry, so it is opted into per export.
 const COLUMNS = [
   { key: 'supplierName', label: 'اسم الصنف عند المورد' },
   { key: 'erpName', label: 'صنف النظام ERP' },
+  { key: 'barcode', label: 'الباركود', defaultOff: true },
   { key: 'qty', label: 'الكمية' },
   { key: 'cost', label: 'تكلفة المورد' },
   { key: 'total', label: 'الإجمالي' },
@@ -28,6 +32,7 @@ function cellValue(line, key) {
   switch (key) {
     case 'supplierName': return line.supplierItemName;
     case 'erpName': return line.erpItemName || 'غير مرتبط';
+    case 'barcode': return line.erpBarcode || '—';
     case 'qty': return line.qty;
     case 'cost': return line.unitCost;
     case 'total': return line.total;
@@ -35,8 +40,19 @@ function cellValue(line, key) {
   }
 }
 
-export function openExportOptionsModal(ret, lines, supplier) {
-  if (!lines.length) { toast('لا توجد أصناف في هذه المرتجعة بعد', 'error'); return; }
+// A return line stores which ERP item it maps to, not that item's
+// barcode — look it up once per export rather than storing a copy that
+// would go stale the moment the barcode is corrected.
+export async function attachBarcodes(lines) {
+  if (!lines.some(l => l.erpItemId)) return lines.map(l => ({ ...l, erpBarcode: '' }));
+  const erpItems = await getAll('erpItems');
+  const barcodeById = Object.fromEntries(erpItems.map(i => [i.id, i.barcode || '']));
+  return lines.map(l => ({ ...l, erpBarcode: l.erpItemId ? (barcodeById[l.erpItemId] || '') : '' }));
+}
+
+export async function openExportOptionsModal(ret, rawLines, supplier) {
+  if (!rawLines.length) { toast('لا توجد أصناف في هذه المرتجعة بعد', 'error'); return; }
+  const lines = await attachBarcodes(rawLines);
   const { node } = openModal({
     title: `تصدير تقرير ${ret.returnNumber}`,
     bodyHtml: `
@@ -45,11 +61,11 @@ export function openExportOptionsModal(ret, lines, supplier) {
         <div id="export-columns">
           ${COLUMNS.map(c => `
             <label class="export-col-toggle">
-              <input type="checkbox" class="col-toggle" value="${c.key}" checked> ${escapeHtml(c.label)}
+              <input type="checkbox" class="col-toggle" value="${c.key}" ${c.defaultOff ? '' : 'checked'}> ${escapeHtml(c.label)}
             </label>
           `).join('')}
         </div>
-        <div class="hint">أخفِ أي عمود (مثل التكلفة) قبل تصدير نسخة تُشارك مع طرف خارجي.</div>
+        <div class="hint">أخفِ أي عمود (مثل التكلفة) قبل تصدير نسخة تُشارك مع طرف خارجي. الباركود مقفول افتراضيًا — علّم عليه لما تحتاجه.</div>
       </div>
       <div class="export-actions">
         <button class="btn btn-primary" id="btn-exp-excel">⬇ تصدير Excel</button>
@@ -135,6 +151,7 @@ export async function exportToExcel(ret, supplier, lines, keys) {
 const CANVAS_COLUMNS = {
   supplierName: { label: 'اسم الصنف عند المورد', flex: true, strong: true },
   erpName: { label: 'صنف النظام ERP', flex: true },
+  barcode: { label: 'الباركود' },
   qty: { label: 'الكمية' },
   cost: { label: 'تكلفة المورد' },
   total: { label: 'الإجمالي' },
@@ -149,6 +166,9 @@ function reportSpec(shopName, ret, supplier, lines, keys) {
 
   return {
     shopName,
+    // Every extra column needs room; a fixed width would start wrapping
+    // item names into three lines as soon as the barcode is switched on.
+    width: 640 + Math.max(0, columns.length - 5) * 110,
     title: `مرتجعة ${ret.returnNumber}`,
     subtitle: supplier?.name || '—',
     dateLabel: fmtDate(ret.createdAt, true),
@@ -156,6 +176,7 @@ function reportSpec(shopName, ret, supplier, lines, keys) {
     rows: lines.map(l => ({
       supplierName: l.supplierItemName,
       erpName: l.erpItemName || 'غير مرتبط',
+      barcode: l.erpBarcode || '—',
       qty: fmtInt(l.qty),
       cost: fmtMoney(l.unitCost),
       total: fmtMoney(l.total),
@@ -255,10 +276,12 @@ export async function openThermalPrintView(ret, supplier, lines, keys) {
     const title = showSupplierName ? l.supplierItemName : (showErpName ? (l.erpItemName || 'غير مرتبط') : l.supplierItemName);
     // If both are checked, the ERP name becomes a small line under the title.
     const subtitle = (showSupplierName && showErpName) ? (l.erpItemName || 'غير مرتبط') : null;
+    const barcode = keys.includes('barcode') ? (l.erpBarcode || '') : '';
     return `
     <div class="tp-item">
       <div class="tp-item-name">${escapeHtml(title)}</div>
       ${subtitle ? `<div class="tp-item-sub">${escapeHtml(subtitle)}</div>` : ''}
+      ${barcode ? `<div class="tp-item-sub">باركود: ${escapeHtml(barcode)}</div>` : ''}
       ${(keys.includes('qty') || keys.includes('cost') || keys.includes('total')) ? `
       <table class="tp-row"><tr>
         ${keys.includes('qty') ? `<td>الكمية: ${fmtInt(l.qty)}</td>` : ''}

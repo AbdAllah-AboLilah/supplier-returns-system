@@ -801,7 +801,10 @@ function wireDetailEvents(container, ret, lines, supplier) {
   const notesInput = qs('#ret-notes', container);
   if (notesInput) autosaveField(notesInput, (val) => saveNotes(ret.id, val), { statusEl: qs('#notes-status', container) });
 
-  qs('#btn-export', container)?.addEventListener('click', () => openExportOptionsModal(ret, lines, supplier));
+  // openExportOptionsModal looks the ERP barcodes up before it opens, so
+  // it is async now — guarded so a failed lookup says so instead of
+  // leaving the button doing nothing.
+  qs('#btn-export', container)?.addEventListener('click', guarded(() => openExportOptionsModal(ret, lines, supplier)));
 
   qs('#btn-send', container)?.addEventListener('click', guarded(async () => {
     if (!(await confirmDialog(`سيتم إرسال المرتجعة ${ret.returnNumber} للمورد وقفل الأصناف. هل أنت متأكد؟`))) return;
