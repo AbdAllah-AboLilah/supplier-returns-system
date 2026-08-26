@@ -9,7 +9,7 @@
 // "auto-update" actually work); when offline you fall back to
 // whatever was last cached.
 // =========================================================
-const CACHE_NAME = 'returns-system-v1.17.12';
+const CACHE_NAME = 'returns-system-v1.17.13';
 // A service worker's own fetch() still goes through the browser's HTTP
 // cache. GitHub Pages serves this app with max-age, so a "network-first"
 // fetch would happily hand back a file the browser cached minutes ago —
