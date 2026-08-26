@@ -14,6 +14,7 @@ import { uid, nowIso, fmtMoney, fmtInt, fmtDate, escapeHtml, fuzzyIncludes, norm
          openModal, confirmDialog, toast, qs, closeOnOutsideClick, guarded } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
 import { findErpItems } from './item-links.js';
+import { getUnits, multiplierOf } from '../core/units.js';
 
 // ---------- Data access ----------
 
@@ -196,7 +197,7 @@ export async function renderSupplierItemsPanel(container, supplierId) {
     renderSupplierItemsPanel(container, supplierId);
   });
 
-  qs('#btn-add-mapping', container).addEventListener('click', () => openAddMappingModal(supplierId, () => renderSupplierItemsPanel(container, supplierId)));
+  qs('#btn-add-mapping', container).addEventListener('click', guarded(() => openAddMappingModal(supplierId, () => renderSupplierItemsPanel(container, supplierId))));
   container.querySelectorAll('.btn-link').forEach(b => b.addEventListener('click', () => openLinkModal(b.dataset.id, () => renderSupplierItemsPanel(container, supplierId))));
   container.querySelectorAll('.btn-cost').forEach(b => b.addEventListener('click', () => openCostModal(b.dataset.id, () => renderSupplierItemsPanel(container, supplierId))));
   container.querySelectorAll('.btn-hist').forEach(b => b.addEventListener('click', () => openHistoryModal(b.dataset.id)));
@@ -210,7 +211,67 @@ export async function renderSupplierItemsPanel(container, supplierId) {
   })));
 }
 
-function openAddMappingModal(supplierId, onDone) {
+// Markup for a cost field paired with a unit selector. What is stored is
+// always the piece cost; this lets the number be typed in whichever unit
+// the supplier actually quotes.
+function costUnitFieldsHtml(units, { label = 'التكلفة', costId = 'f-cost', unitId = 'f-cost-unit', value = '' } = {}) {
+  return `
+    <div class="form-row" style="align-items:flex-end;">
+      <div class="field" style="flex:1;">
+        <label>${escapeHtml(label)}</label>
+        <input type="number" step="0.01" min="0" id="${costId}" value="${value}" placeholder="0.00">
+      </div>
+      <div class="field" style="flex:0 0 130px;">
+        <label>السعر ده بالـ</label>
+        <select id="${unitId}">
+          ${units.map(u => `<option value="${escapeHtml(u.key)}">${escapeHtml(u.label)}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="hint" id="${costId}-preview"></div>
+  `;
+}
+
+// Keeps the piece cost as the real value behind the pair of controls.
+// Switching the unit re-expresses the same cost rather than reinterpreting
+// the number already typed — 77.50 بالقطعة becomes 930.00 بالدستة — and the
+// hint always spells out what will actually be saved.
+function wireCostUnitField(node, units, { costId = 'f-cost', unitId = 'f-cost-unit', initialPieceCost = 0 } = {}) {
+  const costInput = qs(`#${costId}`, node);
+  const unitSelect = qs(`#${unitId}`, node);
+  const preview = qs(`#${costId}-preview`, node);
+  let pieceCost = Number(initialPieceCost) || 0;
+  let multiplier = multiplierOf(units, unitSelect.value);
+
+  const tidy = (n) => (Number.isInteger(n) ? String(n) : String(Number(n.toFixed(4))));
+
+  function renderPreview() {
+    if (!costInput.value) { preview.textContent = ''; return; }
+    preview.textContent = multiplier === 1
+      ? 'هيتحفظ زي ما هو كسعر القطعة.'
+      : `سعر القطعة اللي هيتحفظ: ${fmtMoney(pieceCost)}`;
+  }
+
+  costInput.addEventListener('input', () => {
+    pieceCost = costInput.value === '' ? 0 : (Number(costInput.value) || 0) / multiplier;
+    renderPreview();
+  });
+
+  unitSelect.addEventListener('change', () => {
+    multiplier = multiplierOf(units, unitSelect.value);
+    if (costInput.value !== '') costInput.value = tidy(pieceCost * multiplier);
+    renderPreview();
+  });
+
+  renderPreview();
+  return {
+    // '' when nothing was typed, so callers can tell "no cost given" from zero.
+    pieceCost: () => (costInput.value === '' ? '' : pieceCost),
+  };
+}
+
+async function openAddMappingModal(supplierId, onDone) {
+  const units = await getUnits();
   const { node, onClose } = openModal({
     title: 'إضافة / تعديل صنف عند المورد',
     bodyHtml: `
@@ -226,7 +287,7 @@ function openAddMappingModal(supplierId, onDone) {
         <div class="autocomplete-list" id="erp-results" style="display:none;"></div>
         <div class="small text-dim mt-8" id="erp-selected"></div>
       </div>
-      <div class="field"><label>التكلفة عند هذا المورد (اختياري)</label><input type="number" step="0.01" id="f-cost" placeholder="0.00"></div>
+      ${costUnitFieldsHtml(units, { label: 'التكلفة عند هذا المورد (اختياري)' })}
     `,
     footerButtons: [
       { label: 'إلغاء', className: 'btn-ghost', onClick: (c) => c() },
@@ -238,7 +299,7 @@ function openAddMappingModal(supplierId, onDone) {
           const si = await getOrCreateSupplierItem(supplierId, name);
           const erpItemId = qs('#f-erp-search', node).dataset.selectedId || '';
           if (erpItemId) await linkErpItem(si.id, erpItemId);
-          const costVal = qs('#f-cost', node).value;
+          const costVal = costField.pieceCost();
           // Re-read after the possible link above — passing the pre-link
           // `si` here would silently overwrite that link with the stale copy.
           if (costVal !== '') await updateCost(si.id, costVal);
@@ -256,6 +317,7 @@ function openAddMappingModal(supplierId, onDone) {
   const erpSearchInput = qs('#f-erp-search', node);
   const erpSelectedLabel = qs('#erp-selected', node);
   const costInput = qs('#f-cost', node);
+  const costField = wireCostUnitField(node, units);
 
   nameInput.addEventListener('input', debounce(async () => {
     const q = nameInput.value.trim();
@@ -272,7 +334,11 @@ function openAddMappingModal(supplierId, onDone) {
     nameResults.querySelectorAll('.autocomplete-item').forEach(it => {
       it.addEventListener('click', () => {
         nameInput.value = it.dataset.name;
+        // The stored cost is always per piece, so show it that way.
+        qs('#f-cost-unit', node).value = units[0]?.key || 'piece';
         costInput.value = Number(it.dataset.cost) || '';
+        costInput.dispatchEvent(new Event('input'));
+        qs('#f-cost-unit', node).dispatchEvent(new Event('change'));
         if (it.dataset.erpId) {
           erpSearchInput.value = it.dataset.erpName;
           erpSearchInput.dataset.selectedId = it.dataset.erpId;
@@ -346,22 +412,30 @@ export function openLinkModal(supplierItemId, onDone) {
 }
 
 function openCostModal(supplierItemId, onDone) {
-  getById('supplierItems', supplierItemId).then(row => {
+  Promise.all([getById('supplierItems', supplierItemId), getUnits()]).then(([row, units]) => {
     if (!row) { toast('الصنف ده مش موجود — يمكن يكون اتحذف من جهاز تاني.', 'error'); return; }
     const { node } = openModal({
       title: `تكلفة "${row.supplierItemName}"`,
       bodyHtml: `
-        <div class="field"><label>التكلفة الحالية</label><input type="number" step="0.01" id="f-cost" value="${row.currentCost}"></div>
+        ${costUnitFieldsHtml(units, { label: 'التكلفة الحالية', value: row.currentCost })}
+        <div class="hint">لو المورد مسعّر بالدستة، اختار "دستة" واكتب سعر الدستة — النظام هيحسب سعر القطعة ويحفظه.</div>
         <div class="hint">تحديث التكلفة يبدأ سريانه من الآن فقط. المرتجعات السابقة تحتفظ بالتكلفة وقت إنشائها ولا تتأثر.</div>
       `,
       footerButtons: [
         { label: 'إلغاء', className: 'btn-ghost', onClick: (c) => c() },
         {
           label: 'حفظ', className: 'btn-primary',
-          onClick: guarded(async (c) => { await updateCost(supplierItemId, qs('#f-cost', node).value); toast('تم تحديث التكلفة', 'success'); c(); onDone(); }),
+          onClick: guarded(async (c) => {
+            const cost = costField.pieceCost();
+            if (cost === '') { toast('اكتب التكلفة أولًا', 'error'); return; }
+            await updateCost(supplierItemId, cost);
+            toast('تم تحديث التكلفة', 'success');
+            c(); onDone();
+          }),
         },
       ],
     });
+    const costField = wireCostUnitField(node, units, { initialPieceCost: row.currentCost });
   });
 }
 
@@ -466,7 +540,7 @@ export async function renderAllSupplierItemsView(container) {
       allItemsViewState.expanded.add(b.dataset.supplierId);
       renderGroups();
     }));
-    groupsWrap.querySelectorAll('.btn-add-for-supplier').forEach(b => b.addEventListener('click', () => openAddMappingModal(b.dataset.supplierId, () => renderAllSupplierItemsView(container))));
+    groupsWrap.querySelectorAll('.btn-add-for-supplier').forEach(b => b.addEventListener('click', guarded(() => openAddMappingModal(b.dataset.supplierId, () => renderAllSupplierItemsView(container)))));
     groupsWrap.querySelectorAll('.btn-link').forEach(b => b.addEventListener('click', () => openLinkModal(b.dataset.id, () => renderAllSupplierItemsView(container))));
     groupsWrap.querySelectorAll('.btn-cost').forEach(b => b.addEventListener('click', () => openCostModal(b.dataset.id, () => renderAllSupplierItemsView(container))));
     groupsWrap.querySelectorAll('.btn-hist').forEach(b => b.addEventListener('click', () => openHistoryModal(b.dataset.id)));

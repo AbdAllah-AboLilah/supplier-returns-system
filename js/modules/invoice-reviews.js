@@ -12,7 +12,7 @@
 // two collections (invoiceReviews, invoiceReviewItems) that no other
 // module touches.
 // =========================================================
-import { getAll, getById, put, remove, getByIndex, removeWhere, getSetting, setSetting, nextSequence } from '../core/db.js';
+import { getAll, getById, put, remove, getByIndex, removeWhere, nextSequence } from '../core/db.js';
 import { uid, nowIso, fmtMoney, fmtInt, fmtDate, escapeHtml, fuzzyIncludes, debounce,
          openModal, confirmDialog, toast, paginate, renderPagination, qs, qsa,
          renderPreservingFocus, guarded, closeOnOutsideClick, printHtmlDocument } from '../core/utils.js';
@@ -20,20 +20,8 @@ import { autosaveField } from '../core/autosave.js';
 import { navigate } from '../core/router.js';
 import { openSupplierForm } from './suppliers.js';
 import { findErpItems } from './item-links.js';
+import { getUnits, saveUnits, unitByKey } from '../core/units.js';
 import { drawReport, canvasToBlob } from './report-canvas.js';
-
-const DEFAULT_UNITS = [
-  { key: 'piece', label: 'قطعة', multiplier: 1 },
-  { key: 'dozen', label: 'دستة', multiplier: 12 },
-];
-
-async function getUnits() {
-  const units = await getSetting('invoiceUnits', null);
-  return (units && units.length) ? units : DEFAULT_UNITS;
-}
-function saveUnits(units) {
-  return setSetting('invoiceUnits', units);
-}
 
 async function generateReviewNumber() {
   const year = new Date().getFullYear();
@@ -61,7 +49,7 @@ function bulkPriceLabel(items, units) {
 }
 
 function computeLine(item, units) {
-  const unit = units.find(u => u.key === item.unitKey) || units[0] || DEFAULT_UNITS[0];
+  const unit = unitByKey(units, item.unitKey);
   const multiplier = Number(unit?.multiplier) || 1;
   const qty = Number(item.qty) || 0;
   const price = Number(item.price) || 0;

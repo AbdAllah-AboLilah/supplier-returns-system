@@ -545,6 +545,46 @@ try {
   check('a sent report carries the send date instead',
         dates.sent.startsWith('تاريخ الإرسال:') && dates.sent.includes('22'), dates.sent);
 
+  // ---------- typing a supplier cost per dozen ----------
+  await goto('/suppliers/s1');
+  await page.waitForTimeout(1400);
+  await page.locator('.btn-cost').first().click();
+  await page.waitForSelector('#f-cost-unit', { timeout: 10000 });
+
+  const costStart = await page.evaluate(() => ({
+    unit: document.querySelector('#f-cost-unit').value,
+    units: Array.from(document.querySelector('#f-cost-unit').options).map(o => o.value),
+    value: document.querySelector('#f-cost').value,
+  }));
+  check('the cost dialog offers the configured units, piece first',
+        costStart.unit === 'piece' && costStart.units.includes('dozen'), JSON.stringify(costStart));
+
+  // Switching the unit re-expresses the same cost rather than reinterpreting it.
+  await page.selectOption('#f-cost-unit', 'dozen');
+  await page.waitForTimeout(250);
+  const reExpressed = await page.evaluate(() => ({
+    value: document.querySelector('#f-cost').value,
+    hint: document.querySelector('#f-cost-preview').textContent,
+  }));
+  check('switching to dozen re-expresses the same cost',
+        Number(reExpressed.value) === Number(costStart.value) * 12, JSON.stringify(reExpressed));
+
+  // Typing a dozen price stores the piece price.
+  await page.fill('#f-cost', '930');
+  await page.dispatchEvent('#f-cost', 'input');
+  await page.waitForTimeout(250);
+  const hint = await page.$eval('#f-cost-preview', el => el.textContent);
+  check('the dialog says which piece price will be saved', hint.includes('77.50'), hint);
+
+  const savedItemId = await page.evaluate(() => document.querySelector('.btn-cost')?.dataset.id);
+  await page.locator('.modal-footer .btn-primary').click();
+  await page.waitForTimeout(1200);
+  const stored = await page.evaluate(async (id) => {
+    const db = await import('/js/core/db.js');
+    return (await db.getById('supplierItems', id)).currentCost;
+  }, savedItemId);
+  check('a dozen price is stored as the piece cost', Math.abs(stored - 77.5) < 0.001, `stored=${stored}`);
+
   check('no console or page errors', pageErrors.length === 0, pageErrors.slice(0, 3).join(' | '));
 } catch (err) {
   check('suite ran to completion', false, err.message.split('\n')[0]);
