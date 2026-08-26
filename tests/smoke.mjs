@@ -785,6 +785,68 @@ try {
   check('a name new to the supplier is added to their items', crossed.created && crossed.linked, JSON.stringify(crossed));
   check('a dozen price on the invoice becomes the piece cost', crossed.cost === 5, `cost=${crossed.cost}`);
 
+  // ---------- adding a second ERP link under one supplier name ----------
+  await goto('/suppliers/s2');
+  await page.waitForTimeout(1400);
+  await page.click('#btn-add-mapping');
+  await page.waitForSelector('#f-name', { timeout: 10000 });
+
+  const beforePick = await page.$eval('#mapping-mode', el => el.style.display);
+  await page.type('#f-name', 'كريب سادة 19', { delay: 40 });
+  await page.waitForTimeout(700);
+  await page.locator('#name-results .autocomplete-item').first().click();
+  await page.waitForTimeout(400);
+  const editMode = await page.evaluate(() => ({
+    shown: document.querySelector('#mapping-mode').style.display !== 'none',
+    text: document.querySelector('#mapping-mode').textContent.replace(/\s+/g, ' ').trim(),
+    hasButton: !!document.querySelector('#btn-mode-add-link'),
+    cost: document.querySelector('#f-cost').value,
+  }));
+  check('picking an existing item says so, and offers the second link',
+        beforePick === 'none' && editMode.shown && editMode.hasButton && editMode.text.includes('بتعدّل على صنف موجود'),
+        editMode.text.slice(0, 60));
+
+  await page.click('#btn-mode-add-link');
+  await page.waitForTimeout(400);
+  const addMode = await page.evaluate(() => ({
+    text: document.querySelector('#mapping-mode').textContent.replace(/\s+/g, ' ').trim(),
+    erpValue: document.querySelector('#f-erp-search').value,
+    erpPicked: document.querySelector('#f-erp-search').dataset.selectedId || '',
+    name: document.querySelector('#f-name').value,
+    cost: document.querySelector('#f-cost').value,
+  }));
+  check('the second-link button keeps the name and cost and clears the ERP pick',
+        addMode.text.includes('ربط ERP تاني') && addMode.erpValue === '' && addMode.erpPicked === ''
+        && addMode.name === 'كريب سادة 19' && addMode.cost === editMode.cost,
+        JSON.stringify(addMode));
+
+  // Saving without choosing the new ERP item must be refused, not guessed.
+  const rowsBefore = await page.evaluate(async () => {
+    const db = await import('/js/core/db.js');
+    return (await db.getByIndex('supplierItems', 'supplierId', 's2')).filter(r => r.supplierItemName === 'كريب سادة 19').length;
+  });
+  await page.locator('.modal-footer .btn-primary').click();
+  await page.waitForTimeout(1200);
+  const stillOpen = await page.$('#f-erp-search') !== null;
+  check('adding a second link without an ERP item is refused', stillOpen);
+
+  await page.type('#f-erp-search', 'صنف ERP رقم 44', { delay: 30 });
+  await page.waitForTimeout(700);
+  await page.locator('#erp-results .autocomplete-item').first().click();
+  await page.waitForTimeout(300);
+  await page.locator('.modal-footer .btn-primary').click();
+  await page.waitForTimeout(2500);
+  const secondLink = await page.evaluate(async () => {
+    const db = await import('/js/core/db.js');
+    const rows = (await db.getByIndex('supplierItems', 'supplierId', 's2')).filter(r => r.supplierItemName === 'كريب سادة 19');
+    return { count: rows.length, links: rows.map(r => r.erpItemId), costs: rows.map(r => r.currentCost) };
+  });
+  check('a second row is created under the same name with its own link',
+        secondLink.count === rowsBefore + 1 && new Set(secondLink.links).size === secondLink.count,
+        JSON.stringify(secondLink));
+  check('the second row carries the shared cost',
+        new Set(secondLink.costs).size === 1, JSON.stringify(secondLink.costs));
+
   check('no console or page errors', pageErrors.length === 0, pageErrors.slice(0, 3).join(' | '));
 } catch (err) {
   check('suite ran to completion', false, err.message.split('\n')[0]);

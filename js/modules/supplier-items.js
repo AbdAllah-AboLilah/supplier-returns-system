@@ -324,11 +324,12 @@ async function openAddMappingModal(supplierId, onDone) {
   const { node, onClose, close } = openModal({
     title: 'إضافة / تعديل صنف عند المورد',
     bodyHtml: `
+      <div id="mapping-mode" class="mapping-mode" style="display:none;"></div>
       <div class="field autocomplete">
         <label>اسم الصنف كما يكتبه المورد *</label>
         <input type="text" id="f-name" placeholder="مثال: كريبسادة لوكس" autocomplete="off">
         <div class="autocomplete-list" id="name-results" style="display:none;"></div>
-        <div class="hint">هيظهرلك أصناف مشابهة موجودة بالفعل. اختار واحد منها عشان تعدّل عليه، أو سيب الاسم زي ما هو واربطه بصنف ERP تاني — وقتها هيتسجّل كصنف منفصل.</div>
+        <div class="hint">هيظهرلك أصناف مشابهة موجودة بالفعل — اختار واحد منها عشان تعدّل عليه.</div>
       </div>
       <div class="field autocomplete">
         <label>ربط بصنف نظام ERP (اختياري)</label>
@@ -353,16 +354,60 @@ async function openAddMappingModal(supplierId, onDone) {
   const nameInput = qs('#f-name', node);
   const nameResults = qs('#name-results', node);
 
+  // What this dialog is about to do, kept visible rather than implied.
+  // Picking a suggestion used to silently mean "edit that row", so changing
+  // its ERP link relinked the row instead of adding the second one that was
+  // wanted — with nothing on screen saying which of the two would happen.
+  //   'new'      — a name not picked from the list
+  //   'edit'     — change the row that was picked, link included
+  //   'add-link' — keep that row and add another under the same name
+  let mode = 'new';
+  let baseItem = null;
+
+  function setMode(next) { mode = next; renderModeBanner(); }
+
+  function renderModeBanner() {
+    const banner = qs('#mapping-mode', node);
+    if (!baseItem || mode === 'new') { banner.style.display = 'none'; banner.innerHTML = ''; return; }
+
+    if (mode === 'edit') {
+      banner.className = 'mapping-mode editing';
+      banner.innerHTML = `
+        <div>✏️ بتعدّل على صنف موجود: <b>${escapeHtml(baseItem.supplierItemName)}</b>${baseItem.erpItemName ? ` — ${escapeHtml(baseItem.erpItemName)}` : ''}</div>
+        <button type="button" class="btn btn-sm btn-gold" id="btn-mode-add-link">+ لأ، ضيف ربط ERP تاني</button>`;
+    } else {
+      banner.className = 'mapping-mode adding';
+      banner.innerHTML = `
+        <div>➕ هتضيف <b>ربط ERP تاني</b> لنفس الصنف: <b>${escapeHtml(baseItem.supplierItemName)}</b><div class="small">الاسم والتكلفة زي ما هما — اختار صنف ERP الجديد بس.</div></div>
+        <button type="button" class="btn btn-sm btn-ghost" id="btn-mode-edit">رجوع للتعديل</button>`;
+    }
+    banner.style.display = '';
+
+    qs('#btn-mode-add-link', banner)?.addEventListener('click', () => {
+      setMode('add-link');
+      erpSearchInput.value = '';
+      erpSearchInput.dataset.selectedId = '';
+      erpSelectedLabel.textContent = '';
+      erpSearchInput.focus();
+    });
+    qs('#btn-mode-edit', banner)?.addEventListener('click', () => {
+      setMode('edit');
+      erpSearchInput.value = baseItem.erpItemName || '';
+      erpSearchInput.dataset.selectedId = baseItem.erpItemId || '';
+      erpSelectedLabel.textContent = baseItem.erpItemId ? `✓ مرتبط حاليًا بـ ${baseItem.erpItemName || ''}` : '';
+    });
+  }
+
   async function saveMapping(close) {
     const name = qs('#f-name', node).value.trim();
     if (!name) { toast('الاسم مطلوب', 'error'); return; }
     const erpItemId = qs('#f-erp-search', node).dataset.selectedId || '';
-    // Picking a suggestion means "edit this one" — including relinking it.
-    // Typing a name that merely happens to exist means the (name, ERP item)
-    // pair decides, so a different link becomes a separate item.
-    const pickedId = nameInput.dataset.existingId || '';
-    const si = pickedId
-      ? await getById('supplierItems', pickedId)
+    if (mode === 'add-link' && !erpItemId) { toast('اختار صنف ERP الجديد الأول', 'error'); return; }
+
+    // 'edit' works on the row that was picked. Anything else goes through
+    // the (name, ERP item) rule, which is what creates the second row.
+    const si = (mode === 'edit' && baseItem)
+      ? await getById('supplierItems', baseItem.id)
       : await getOrCreateSupplierItem(supplierId, name, { erpItemId });
     if (!si) { toast('الصنف ده مش موجود — يمكن يكون اتحذف من جهاز تاني.', 'error'); return; }
     if (erpItemId && (si.erpItemId || null) !== erpItemId) await linkErpItem(si.id, erpItemId);
@@ -370,6 +415,7 @@ async function openAddMappingModal(supplierId, onDone) {
     // Re-read inside updateCost after the possible link above — passing the
     // pre-link `si` would silently overwrite that link with the stale copy.
     if (costVal !== '') await updateCost(si.id, costVal);
+    toast(mode === 'add-link' ? 'اتسجّل كصنف منفصل بنفس الاسم' : 'تم الحفظ', 'success');
     close(); onDone();
   }
   const erpSearchInput = qs('#f-erp-search', node);
@@ -377,7 +423,7 @@ async function openAddMappingModal(supplierId, onDone) {
   const costInput = qs('#f-cost', node);
   const costField = wireCostUnitField(node, units);
 
-  nameInput.addEventListener('input', () => { nameInput.dataset.existingId = ''; });
+  nameInput.addEventListener('input', () => { baseItem = null; setMode('new'); });
   nameInput.addEventListener('input', debounce(async () => {
     const q = nameInput.value.trim();
     if (!q) { nameResults.style.display = 'none'; return; }
@@ -393,7 +439,11 @@ async function openAddMappingModal(supplierId, onDone) {
     nameResults.querySelectorAll('.autocomplete-item').forEach(it => {
       it.addEventListener('click', () => {
         nameInput.value = it.dataset.name;
-        nameInput.dataset.existingId = it.dataset.id; // editing this exact row
+        baseItem = {
+          id: it.dataset.id, supplierItemName: it.dataset.name,
+          erpItemId: it.dataset.erpId || '', erpItemName: it.dataset.erpName || '',
+        };
+        setMode('edit');
         // The stored cost is always per piece, so show it that way.
         qs('#f-cost-unit', node).value = units[0]?.key || 'piece';
         costInput.value = Number(it.dataset.cost) || '';
@@ -409,7 +459,6 @@ async function openAddMappingModal(supplierId, onDone) {
           erpSelectedLabel.textContent = '';
         }
         nameResults.style.display = 'none';
-        toast('هتعدّل على الصنف الموجود ده', 'default');
       });
     });
   }, 200));

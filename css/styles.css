@@ -587,3 +587,16 @@ textarea{ resize:vertical; min-height:70px; }
    kept on one line so the stacked mobile layout does not split them. */
 .cost-cell{ display:inline-flex; align-items:center; gap:6px; }
 .cost-cell .line-refresh-cost{ padding:4px 8px; line-height:1; }
+
+/* Says what the "إضافة / تعديل صنف عند المورد" dialog is about to do —
+   edit the row that was picked, or add another under the same name. */
+.mapping-mode{
+  display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  padding:10px 12px; margin-bottom:14px;
+  border-radius:var(--radius-s); font-size:12.5px; line-height:1.6;
+  border:1px solid var(--line-strong); background:var(--paper);
+}
+.mapping-mode.editing{ border-color:var(--gold); background:var(--gold-tint); }
+.mapping-mode.adding{ border-color:var(--teal); background:var(--teal-tint); }
+.mapping-mode .small{ font-size:11.5px; color:var(--text-600); margin-top:2px; }
+.mapping-mode button{ margin-inline-start:auto; white-space:nowrap; }
