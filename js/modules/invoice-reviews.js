@@ -203,7 +203,10 @@ export async function addReviewItem(reviewId, { itemName, erpItemId, supplierIte
     createdAt: nowIso(),
   };
   await put('invoiceReviewItems', line);
-  getById('invoiceReviews', reviewId).then(r => { if (r) touch(r); });
+  // Awaited rather than left to finish on its own: a write still in the
+  // air is lost if the page reloads, which the auto-update does by itself.
+  const parent = await getById('invoiceReviews', reviewId);
+  if (parent) await touch(parent);
   return line;
 }
 
@@ -219,7 +222,8 @@ export async function removeReviewItem(lineId) {
   const line = await getById('invoiceReviewItems', lineId);
   if (!line) throw new Error(MISSING_LINE);
   await remove('invoiceReviewItems', lineId);
-  getById('invoiceReviews', line.reviewId).then(r => { if (r) touch(r); });
+  const parentReview = await getById('invoiceReviews', line.reviewId);
+  if (parentReview) await touch(parentReview);
 }
 
 // A review is where a supplier's own prices get transcribed, so a price
@@ -446,7 +450,7 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
               <td class="num" id="ln-piece-${i.id}" data-label="سعر القطعة"><b>${fmtMoney(c.piecePrice)}</b></td>
               <td class="num text-dim" id="ln-actual-${i.id}" data-label="الكمية الفعلية">${fmtInt(c.actualQty)} قطعة</td>
               <td class="num text-mono" id="ln-total-${i.id}" data-label="الإجمالي">${fmtMoney(c.total)}</td>
-              <td><button class="btn btn-sm btn-ghost ln-remove" data-id="${i.id}">حذف</button></td>
+              <td><button class="btn btn-sm btn-ghost ln-remove" data-id="${i.id}" data-name="${escapeHtml(i.itemName || '')}">حذف</button></td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -467,7 +471,7 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
             <label>اسم الصنف عند المورد</label>
             <input type="text" id="add-item-name" placeholder="${review.supplierId ? 'ابدأ الكتابة...' : 'اختار المورد الأول'}" autocomplete="off" ${review.supplierId ? '' : 'disabled'}>
             <div class="autocomplete-list" id="add-item-erp-results" style="display:none;"></div>
-            ${review.supplierId ? '' : '<div class="hint">اختار المورد فوق عشان تقدر تختار من أصنافه أو تضيف صنف جديد ليه.</div>'}
+            <div class="hint" id="add-item-supplier-hint"${review.supplierId ? ' style="display:none;"' : ''}>اختار المورد فوق عشان تقدر تختار من أصنافه أو تضيف صنف جديد ليه.</div>
           </div>
           <div class="field" style="flex:0 0 90px;"><label>الكمية</label><input type="number" id="add-qty" min="0" step="any" placeholder="0"></div>
           <div class="field" style="flex:0 0 120px;">
@@ -527,6 +531,27 @@ function renderPhotoArea(container, review) {
 // the outside-click listener is replaced rather than stacked.
 let disposeOutsideClick = null;
 
+// Enables or disables the add-item name field to match whether the review
+// has a supplier yet. Whatever was half-typed is dropped: the name is
+// resolved against the supplier's own items, so a name left over from
+// another supplier would be filed under the wrong one.
+function syncAddItemToSupplier(container, review) {
+  const input = qs('#add-item-name', container);
+  if (!input) return;
+  const ready = !!review.supplierId;
+  input.disabled = !ready;
+  input.placeholder = ready ? 'ابدأ الكتابة...' : 'اختار المورد الأول';
+  input.value = '';
+  input.dataset.supplierItemId = '';
+  input.dataset.erpId = '';
+  const results = qs('#add-item-erp-results', container);
+  if (results) { results.style.display = 'none'; results.innerHTML = ''; }
+  const priceInput = qs('#add-price', container);
+  if (priceInput) { priceInput.value = ''; priceInput.dataset.piecePrice = ''; }
+  const hint = qs('#add-item-supplier-hint', container);
+  if (hint) hint.style.display = ready ? 'none' : '';
+}
+
 function wireDetailEvents(container, review, items, units, suppliers) {
   if (disposeOutsideClick) { disposeOutsideClick(); disposeOutsideClick = null; }
   qs('#btn-delete-review', container).addEventListener('click', guarded(async () => {
@@ -541,6 +566,12 @@ function wireDetailEvents(container, review, items, units, suppliers) {
     const supplierId = supplierSelect.value || null;
     const supplierName = supplierId ? (suppliers.find(s => s.id === supplierId)?.name || '') : '';
     await updateReviewMeta(review.id, { supplierId, supplierName });
+    // The screen is not re-rendered on a meta change, so the item field —
+    // which is drawn disabled until there is a supplier to search — has to
+    // be told itself, otherwise picking a supplier leaves it dead.
+    review.supplierId = supplierId;
+    review.supplierName = supplierName;
+    syncAddItemToSupplier(container, review);
     toast('تم الحفظ', 'success');
   }));
   qs('#btn-new-supplier', container).addEventListener('click', (e) => {
@@ -598,7 +629,12 @@ function wireDetailEvents(container, review, items, units, suppliers) {
     recalcLine(container, sel.dataset.id, units);
     await syncSupplierCostFromLine(line, units);
   })));
+  // Deleting a line used to happen on a single tap, with no way back —
+  // on a phone the button sits right beside the price being edited, and a
+  // mis-tap silently took the line away.
   qsa('.ln-remove', container).forEach(b => b.addEventListener('click', guarded(async () => {
+    const name = b.dataset.name || 'الصنف';
+    if (!(await confirmDialog(`هيتشال "${name}" من الفاتورة. تمام؟`, { okLabel: 'حذف', danger: true }))) return;
     await removeReviewItem(b.dataset.id);
     renderInvoiceReviewDetail(container, review.id);
   })));
@@ -614,8 +650,32 @@ function wireDetailEvents(container, review, items, units, suppliers) {
     const unit = units.find(u => u.key === addUnit.value) || units[0];
     addPriceLabel.textContent = `سعر ${unit?.label || 'الوحدة'}`;
   }
-  addUnit.addEventListener('change', syncAddPriceLabel);
+  // The price is per whichever unit is selected, so switching the unit has
+  // to re-express it. Leaving the number put would put a piece price under
+  // a "سعر الدستة" label — and it is read back as a dozen price, so adding
+  // the line would store a twelfth of the real cost. The exact piece price
+  // is kept beside the field when one was filled in from an item, so a
+  // round trip قطعة → دستة → قطعة comes back to the same figure instead of
+  // drifting on the rounded display value.
+  let lastUnitKey = addUnit.value;
+  addUnit.addEventListener('change', () => {
+    const priceInput = qs('#add-price', container);
+    const shown = Number(priceInput?.value);
+    if (priceInput && priceInput.value !== '' && Number.isFinite(shown) && shown > 0) {
+      const from = Number(unitByKey(units, lastUnitKey)?.multiplier) || 1;
+      const to = Number(unitByKey(units, addUnit.value)?.multiplier) || 1;
+      const exact = Number(priceInput.dataset.piecePrice);
+      const piecePrice = Number.isFinite(exact) && exact > 0 ? exact : shown / from;
+      priceInput.value = Number((piecePrice * to).toFixed(4));
+    }
+    lastUnitKey = addUnit.value;
+    syncAddPriceLabel();
+  });
   syncAddPriceLabel();
+
+  // A hand-typed price is the one being checked against the invoice, so it
+  // replaces whatever the picked item suggested.
+  qs('#add-price', container)?.addEventListener('input', (e) => { e.target.dataset.piecePrice = ''; });
 
   // Item-name field: search ERP items as you type and link to one on
   // pick. Typing without picking still works — the line is just saved
@@ -627,6 +687,8 @@ function wireDetailEvents(container, review, items, units, suppliers) {
   itemNameInput.addEventListener('input', () => {
     itemNameInput.dataset.supplierItemId = ''; // typing invalidates any previous pick
     itemNameInput.dataset.erpId = '';
+    const priceInput = qs('#add-price', container);
+    if (priceInput) priceInput.dataset.piecePrice = '';
   });
   itemNameInput.addEventListener('input', debounce(async () => {
     if (!review.supplierId) return;
@@ -656,6 +718,7 @@ function wireDetailEvents(container, review, items, units, suppliers) {
         if (cost > 0 && priceInput) {
           const unit = unitByKey(units, qs('#add-unit', container).value);
           priceInput.value = Number((cost * (Number(unit?.multiplier) || 1)).toFixed(4));
+          priceInput.dataset.piecePrice = String(cost); // unrounded, for a later unit switch
         }
         erpResultsBox.style.display = 'none';
         qs('#add-qty', container)?.focus();

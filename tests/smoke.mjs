@@ -769,8 +769,10 @@ try {
   await page.fill('#add-item-name', 'صنف اتعرف من الفاتورة');
   await page.waitForTimeout(400);
   await page.fill('#add-qty', '2');
-  await page.fill('#add-price', '60');
+  // Unit first, then its price — switching the unit now re-expresses
+  // whatever is already in the field rather than reinterpreting it.
   await page.selectOption('#add-unit', 'dozen');
+  await page.fill('#add-price', '60');
   await page.click('#btn-add-line');
   await page.waitForTimeout(2500);
   const crossed = await page.evaluate(async () => {
@@ -784,6 +786,100 @@ try {
   });
   check('a name new to the supplier is added to their items', crossed.created && crossed.linked, JSON.stringify(crossed));
   check('a dozen price on the invoice becomes the piece cost', crossed.cost === 5, `cost=${crossed.cost}`);
+
+  // ---------- the item field has to follow the supplier picked on screen ----------
+  // Reported: choosing a supplier left "اسم الصنف عند المورد" dead, so an
+  // item could not be added without leaving the review and coming back.
+  await goto('/invoice-reviews/ivnew');
+  await page.waitForTimeout(900);
+  const readState = () => page.evaluate(() => ({
+    disabled: document.querySelector('#add-item-name').disabled,
+    hinted: document.querySelector('#add-item-supplier-hint')?.style.display !== 'none',
+  }));
+  const noSupplier = await readState();
+  check('a review with no supplier keeps the item field shut',
+        noSupplier.disabled && noSupplier.hinted, JSON.stringify(noSupplier));
+
+  await page.selectOption('#f-supplier', 's2');
+  await page.waitForTimeout(800);
+  const withSupplier = await readState();
+  check('picking a supplier opens the item field there and then',
+        !withSupplier.disabled && !withSupplier.hinted, JSON.stringify(withSupplier));
+
+  await page.click('#add-item-name');
+  await page.type('#add-item-name', 'كريب', { delay: 40 });
+  await page.waitForTimeout(700);
+  const liveCount = await page.$$eval('#add-item-erp-results .autocomplete-item', els => els.length);
+  check('and it searches that supplier without a reload', liveCount > 1, `${liveCount} suggestions`);
+
+  // ---------- the price follows the unit it is labelled with ----------
+  // Reported: picking an item filled a piece price, then switching to دستة
+  // left the number alone under a "سعر دستة" label — so adding the line
+  // would have stored a twelfth of the real cost.
+  await page.fill('#add-item-name', 'كريب سادة 19');
+  await page.waitForTimeout(700);
+  await page.locator('#add-item-erp-results .autocomplete-item').first().click();
+  await page.waitForTimeout(300);
+  const piecePrice = await page.$eval('#add-price', el => el.value);
+  await page.selectOption('#add-unit', 'dozen');
+  await page.waitForTimeout(250);
+  const dozen = await page.evaluate(() => ({
+    price: document.querySelector('#add-price').value,
+    label: document.querySelector('#add-price-label').textContent.trim(),
+  }));
+  check('switching the unit re-expresses the price',
+        Number(piecePrice) > 0 && Number(dozen.price) === Number(piecePrice) * 12 && dozen.label.includes('دستة'),
+        `${piecePrice} -> ${JSON.stringify(dozen)}`);
+
+  await page.selectOption('#add-unit', 'piece');
+  await page.waitForTimeout(250);
+  const backToPiece = await page.$eval('#add-price', el => el.value);
+  check('and switching back lands on the same figure',
+        Number(backToPiece) === Number(piecePrice), `${piecePrice} -> ${dozen.price} -> ${backToPiece}`);
+
+  // ---------- deleting a line asks first ----------
+  // Reported: an item added to a review turned up deleted. The delete
+  // button sits beside the price on a cramped phone row and took the line
+  // away on a single tap, with nothing to undo it.
+  await goto('/invoice-reviews/iv1');
+  await page.waitForTimeout(900);
+  const linesBefore = await page.$$eval('.ln-remove', els => els.length);
+  await page.locator('.ln-remove').first().click();
+  await page.waitForTimeout(400);
+  const asked = await page.evaluate(() => {
+    const modal = document.querySelector('.modal');
+    return modal ? modal.textContent.replace(/\s+/g, ' ').trim() : '';
+  });
+  check('deleting an invoice line asks before it goes', asked.includes('هيتشال'), asked.slice(0, 60));
+
+  await page.locator('.modal-footer .btn-ghost').first().click(); // إلغاء
+  await page.waitForTimeout(400);
+  const afterCancel = await page.$$eval('.ln-remove', els => els.length);
+  check('saying no keeps the line', afterCancel === linesBefore, `${linesBefore} -> ${afterCancel}`);
+
+  await page.locator('.ln-remove').first().click();
+  await page.waitForTimeout(400);
+  await page.locator('.modal-footer .btn-danger').first().click();
+  await page.waitForTimeout(900);
+  const afterConfirm = await page.$$eval('.ln-remove', els => els.length);
+  check('saying yes removes it', afterConfirm === linesBefore - 1, `${linesBefore} -> ${afterConfirm}`);
+
+  // The return screen deleted a line on one tap too.
+  await goto('/returns/r1');
+  await page.waitForTimeout(1200);
+  const retLinesBefore = await page.$$eval('.line-remove', els => els.length);
+  await page.locator('.line-remove').first().click();
+  await page.waitForTimeout(400);
+  const retAsked = await page.evaluate(() => {
+    const modal = document.querySelector('.modal');
+    return modal ? modal.textContent.replace(/\s+/g, ' ').trim() : '';
+  });
+  await page.locator('.modal-footer .btn-ghost').first().click();
+  await page.waitForTimeout(600);
+  const retAfterCancel = await page.$$eval('.line-remove', els => els.length);
+  check('a return line asks too, and survives a no',
+        retAsked.includes('هيتشال') && retAfterCancel === retLinesBefore,
+        `${retAsked.slice(0, 40)} | ${retLinesBefore} -> ${retAfterCancel}`);
 
   // ---------- adding a second ERP link under one supplier name ----------
   await goto('/suppliers/s2');
