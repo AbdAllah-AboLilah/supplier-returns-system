@@ -935,11 +935,15 @@ try {
   await page.click('#btn-manage-units');
   await page.waitForSelector('#units-table', { timeout: 10000 });
   const unitRowsBefore = await page.$$eval('#units-table tbody tr', els => els.length);
+  // Toasts linger for 2.6s and this step follows one, so clear them first
+  // and read them all — otherwise the assertion can pick up the previous
+  // step's message instead of this one's.
+  await page.evaluate(() => document.querySelectorAll('.toast').forEach(t => t.remove()));
   await page.locator('#units-table tbody tr[data-key="dozen"] .btn-del-unit').click();
   await page.waitForTimeout(700);
   const unitGuard = await page.evaluate(() => ({
     rows: document.querySelectorAll('#units-table tbody tr').length,
-    toast: document.querySelector('.toast')?.textContent.trim() || '',
+    toast: Array.from(document.querySelectorAll('.toast')).map(t => t.textContent.trim()).join(' | '),
   }));
   check('a unit that invoice lines are using cannot be deleted',
         unitGuard.rows === unitRowsBefore && unitGuard.toast.includes('مستخدمة'),
