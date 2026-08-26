@@ -3,7 +3,8 @@
   "private": true,
   "description": "أدوات التطوير فقط — التطبيق نفسه HTML/JS خام وبيشتغل من غير أي build",
   "scripts": {
-    "test": "node tests/smoke.mjs",
+    "test": "node tests/smoke.mjs && node tests/update-recovery.mjs",
+    "test:update": "node tests/update-recovery.mjs",
     "lint": "eslint js sw.js",
     "serve": "python3 -m http.server 8080"
   },

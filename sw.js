@@ -10,6 +10,22 @@
 // whatever was last cached.
 // =========================================================
 const CACHE_NAME = 'returns-system-v1.17.4';
+// A service worker's own fetch() still goes through the browser's HTTP
+// cache. GitHub Pages serves this app with max-age, so a "network-first"
+// fetch would happily hand back a file the browser cached minutes ago —
+// and then store that stale copy under the *new* version's cache name.
+// That is what left clients reloading forever on "جارِ التحديث": the
+// version check read a fresh version.json while every module it compared
+// against came from cache. Same-origin requests are always revalidated
+// against the server, so a changed file is always seen as changed.
+function fetchFresh(request, mode = 'no-cache') {
+  return fetch(new Request(request.url, {
+    cache: mode,
+    credentials: 'same-origin',
+    redirect: 'follow',
+  }));
+}
+
 const APP_SHELL = [
   './',
   './index.html',
@@ -43,9 +59,17 @@ const APP_SHELL = [
 const NEVER_CACHE = ['version.json'];
 
 self.addEventListener('install', (event) => {
+  // cache.addAll() reads through the HTTP cache too, so priming a new
+  // version's cache used to fill it with the previous version's files.
+  // 'reload' bypasses the HTTP cache outright — this runs once per
+  // deployment, so the extra cost is paid once.
   event.waitUntil(
     caches.open(CACHE_NAME)
-      .then(cache => cache.addAll(APP_SHELL))
+      .then(cache => Promise.all(APP_SHELL.map(url =>
+        fetchFresh(new Request(new URL(url, self.location).href), 'reload')
+          .then(res => (res && res.ok ? cache.put(url, res) : null))
+          .catch(() => null) // one unreachable file must not fail the whole install
+      )))
       .then(() => self.skipWaiting())
   );
 });
@@ -85,16 +109,17 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Same-origin app shell: network-first so updates are seen right
-  // away; cache is only a fallback for offline use.
+  // Same-origin app shell: revalidate against the server every time, so
+  // an updated file is never missed; the cache is only a fallback for
+  // when the network is unreachable.
   event.respondWith(
-    fetch(req).then(res => {
+    fetchFresh(req).then(res => {
       if (res && res.status === 200) {
         const copy = res.clone();
         caches.open(CACHE_NAME).then(cache => cache.put(req, copy));
       }
       return res;
-    }).catch(() => caches.match(req))
+    }).catch(() => caches.match(req).then(hit => hit || Promise.reject(new Error('offline and not cached'))))
   );
 });
 
@@ -102,4 +127,9 @@ self.addEventListener('fetch', (event) => {
 // (used together with the client-side version check).
 self.addEventListener('message', (event) => {
   if (event.data === 'SKIP_WAITING') self.skipWaiting();
+  // Recovery hatch: the page can ask for every cache to be dropped when
+  // it detects it is running code older than what is deployed.
+  if (event.data === 'PURGE_CACHES') {
+    event.waitUntil(caches.keys().then(keys => Promise.all(keys.map(k => caches.delete(k)))));
+  }
 });

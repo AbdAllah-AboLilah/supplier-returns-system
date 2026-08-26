@@ -565,3 +565,16 @@ textarea{ resize:vertical; min-height:70px; }
   .table-toolbar{ flex-wrap:wrap; }
   .table-toolbar input[type=search], .table-toolbar select{ max-width:none !important; width:100%; }
 }
+
+/* Shown only when the app has failed to update itself repeatedly — see
+   checkForUpdate() in js/app.js. Deliberately loud: the alternative was
+   an invisible reload loop. */
+.update-stuck{
+  position:fixed; inset-inline:12px; bottom:12px; z-index:200;
+  display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+  background:var(--navy, #1F2A44); color:#fff;
+  padding:14px 16px; border-radius:var(--radius-m, 10px); box-shadow:var(--shadow-2);
+  font-size:13px; line-height:1.6;
+}
+.update-stuck .small{ color:#C9D0DE; font-size:12px; margin-top:2px; }
+.update-stuck button{ margin-inline-start:auto; white-space:nowrap; }

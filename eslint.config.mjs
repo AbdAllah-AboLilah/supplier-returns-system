@@ -10,7 +10,8 @@ export default [
       sourceType: 'module',
       globals: {
         window: 'readonly', document: 'readonly', console: 'readonly', navigator: 'readonly',
-        localStorage: 'readonly', indexedDB: 'readonly', fetch: 'readonly', location: 'readonly',
+        localStorage: 'readonly', sessionStorage: 'readonly', indexedDB: 'readonly', fetch: 'readonly', location: 'readonly',
+        Request: 'readonly', Response: 'readonly',
         setTimeout: 'readonly', clearTimeout: 'readonly', setInterval: 'readonly', clearInterval: 'readonly',
         Blob: 'readonly', File: 'readonly', FileReader: 'readonly', Image: 'readonly', URL: 'readonly',
         CSS: 'readonly', MutationObserver: 'readonly', crypto: 'readonly', Event: 'readonly',

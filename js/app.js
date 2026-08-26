@@ -111,6 +111,7 @@ qs('.sidebar-footer').prepend(statusEl);
 // ---------- PWA: register service worker + auto-update ----------
 
 let refreshing = false;
+let updateInFlight = false;
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
   window.addEventListener('load', () => {
@@ -119,27 +120,128 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   // When a new service worker takes control, the page underneath it is
   // already stale — reload once so the user is running the new code.
   navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (refreshing) return;
+    // A controller going *away* is an unregister, not a new version
+    // taking over. Reloading for it only re-registers the worker, which
+    // claims the page, which fires this again — a reload loop of its own.
+    if (!navigator.serviceWorker.controller) return;
+    // And never reload from here while the update path below is already
+    // driving one; the two used to race and reload each other.
+    if (refreshing || updateInFlight) return;
     refreshing = true;
     window.location.reload();
   });
 }
 
-// version.json is fetched with no-store so this always sees the file
-// as it currently sits on the server (GitHub Pages, in production),
-// regardless of any HTTP or service-worker caching. If it disagrees
-// with the version baked into this loaded copy of the app, a newer
-// deployment exists — tell the person and reload automatically.
+// version.json is fetched with no-store, so it always reflects what is
+// actually deployed. APP_VERSION comes from a module, which travels
+// through the HTTP cache and the service-worker cache — the two can
+// disagree, and a plain reload can come back just as stale and disagree
+// again. Unbounded, that is an endless "جارِ التحديث" loop with the app
+// unusable, so each attempt clears more state than the last and the
+// whole thing gives up rather than spinning.
+
+const UPDATE_KEY = 'returns-system:update-attempt';
+const MIN_ATTEMPT_GAP_MS = 6000; // never spin faster than this, whatever happens
+const MAX_ATTEMPTS = 3;
+
+function readUpdateState(version) {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(UPDATE_KEY) || 'null');
+    if (!saved || saved.version !== version) return { attempt: 0, at: 0 };
+    return { attempt: saved.attempt || 0, at: saved.at || 0 };
+  } catch (e) { return { attempt: 0, at: 0 }; }
+}
+function writeUpdateState(version, attempt) {
+  try { sessionStorage.setItem(UPDATE_KEY, JSON.stringify({ version, attempt, at: Date.now() })); }
+  catch (e) { /* private mode — the attempt cap is lost, the gap check still holds */ }
+}
+function clearUpdateState() {
+  try { sessionStorage.removeItem(UPDATE_KEY); } catch (e) { /* ignore */ }
+}
+
+// Drops the copies of the app a reload would otherwise come back to.
+// The service worker is deliberately kept: it is the only thing that can
+// force a revalidated fetch of every module (see sw.js). Unregistering it
+// hands the page back to the plain HTTP cache, which is exactly what
+// serves the stale files — so that is a manual last resort, not a step.
+async function dropCachedApp() {
+  try {
+    if (window.caches) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    }
+    if ('serviceWorker' in navigator) {
+      const registrations = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(registrations.map(r => r.update().catch(() => {})));
+    }
+  } catch (err) {
+    console.error('cache cleanup failed:', err);
+  }
+}
+
+// Last resort. The app is running older code than what is deployed and
+// clearing every cache did not change that, so stop reloading — an app
+// that reboots every second is worse than an old one — say what is
+// happening and let the person retry deliberately.
+function showStuckUpdateBanner(newVersion) {
+  if (qs('#update-stuck')) return;
+  const banner = document.createElement('div');
+  banner.id = 'update-stuck';
+  banner.className = 'update-stuck';
+  banner.innerHTML = `
+    <div>
+      <b>في إصدار أحدث (${newVersion}) مش راضي يتحمّل.</b>
+      <div class="small">المتصفح لسه ماسك نسخة قديمة من الملفات. دوس "حاول تاني"، ولو فضلت المشكلة اقفل التطبيق افتحه من جديد.</div>
+    </div>
+    <button class="btn btn-sm btn-gold" id="btn-force-update">حاول تاني</button>
+  `;
+  document.body.appendChild(banner);
+  qs('#btn-force-update', banner).addEventListener('click', async () => {
+    clearUpdateState();
+    updateInFlight = true; // keep controllerchange from reloading underneath this
+    await dropCachedApp();
+    window.location.reload();
+  });
+}
+
 async function checkForUpdate() {
+  if (updateInFlight) return;
+  let data;
   try {
     const res = await fetch(`version.json?t=${Date.now()}`, { cache: 'no-store' });
     if (!res.ok) return;
-    const data = await res.json();
-    if (data.version && data.version !== APP_VERSION) {
-      toast(`يوجد إصدار جديد (${data.version}) — جارِ التحديث...`, 'success');
-      setTimeout(() => window.location.reload(), 1500);
-    }
-  } catch (e) { /* offline, or not deployed yet — ignore silently */ }
+    data = await res.json();
+  } catch (e) {
+    return; // offline, or not deployed yet — ignore silently
+  }
+  if (!data || !data.version) return;
+
+  if (data.version === APP_VERSION) {
+    clearUpdateState(); // running what is deployed; forget any past struggle
+    return;
+  }
+
+  const { attempt, at } = readUpdateState(data.version);
+  if (attempt >= MAX_ATTEMPTS) { showStuckUpdateBanner(data.version); return; }
+
+  // A reload lands back here almost immediately. Rather than firing
+  // straight away (which is the loop) or waiting out the five-minute
+  // poll (which leaves the person on old code for five minutes), hold
+  // for the rest of the gap and pick up exactly where it ends.
+  const sinceLast = at ? Date.now() - at : Infinity;
+  if (sinceLast < MIN_ATTEMPT_GAP_MS) {
+    setTimeout(checkForUpdate, MIN_ATTEMPT_GAP_MS - sinceLast + 100);
+    return;
+  }
+
+  updateInFlight = true;
+  writeUpdateState(data.version, attempt + 1);
+  toast(`يوجد إصدار جديد (${data.version}) — جارِ التحديث...`, 'success');
+
+  // Escalate: a plain reload first, then clear the caches serving the
+  // old files, then drop the service worker itself.
+  if (attempt > 0) await dropCachedApp();
+  setTimeout(() => window.location.reload(), attempt === 0 ? 1500 : 600);
 }
 
 checkForUpdate();
