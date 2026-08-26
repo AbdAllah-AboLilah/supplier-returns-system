@@ -121,10 +121,51 @@ try {
         open1 === 'block' && closed1 === 'none' && open2 === 'block' && closed2 === 'none',
         `${open1}/${closed1} then ${open2}/${closed2}`);
 
+  // ---------- the picked item names the ERP item behind it ----------
+  // The suggestion list carries the ERP name, but only while it is open —
+  // after picking, nothing said which ERP item the line would be filed
+  // against, so picking the wrong row showed up only once it was added.
+  await page.click('#add-item-name');
+  await page.fill('#add-item-name', '');
+  await page.type('#add-item-name', 'كريب', { delay: 40 });
+  await page.waitForTimeout(500);
+  const firstPick = await page.$eval('#add-item-results .autocomplete-item',
+    el => ({ id: el.dataset.supplierItemId, erpName: el.dataset.erpName }));
+  await page.locator('#add-item-results .autocomplete-item').first().click();
+  await page.waitForTimeout(300);
+  const pickedErp = await page.evaluate(() => {
+    const n = document.querySelector('#add-item-erp');
+    return { shown: n.style.display !== 'none', text: n.textContent.replace(/\s+/g, ' ').trim() };
+  });
+  check('picking an item on a return names its ERP item',
+        pickedErp.shown && (firstPick.erpName
+          ? pickedErp.text.includes(firstPick.erpName)
+          : pickedErp.text.includes('مش مربوط')),
+        `${JSON.stringify(pickedErp)} expected=${firstPick.erpName || '(unlinked)'}`);
+
+  await page.type('#add-item-name', 'ي', { delay: 40 });
+  await page.waitForTimeout(350);
+  const erpAfterTyping = await page.$eval('#add-item-erp', el => el.style.display);
+  check('and it goes once the name is typed over', erpAfterTyping === 'none', erpAfterTyping);
+  await page.click('#topbar-title'); // close the suggestion list it reopened
+  await page.waitForTimeout(150);
+
   // ---------- adding a line ----------
   await page.fill('#add-item-name', 'صنف اختبار جديد');
   await page.fill('#add-item-qty', '5');
   await page.fill('#add-item-cost', '12.5');
+  // What the line will come to, before it is added.
+  await page.waitForTimeout(200);
+  const totalAsPiece = await page.$eval('#add-item-total', el => el.textContent.trim());
+  await page.selectOption('#add-item-unit-type', 'dozen');
+  await page.waitForTimeout(200);
+  const totalAsDozen = await page.$eval('#add-item-total', el => el.textContent.trim());
+  await page.selectOption('#add-item-unit-type', 'piece');
+  await page.waitForTimeout(200);
+  check('the add card works out the line total as it is typed',
+        totalAsPiece === '62.50' && totalAsDozen === '5.21',
+        `piece=${totalAsPiece} dozen=${totalAsDozen}`);
+
   await page.click('#btn-add-item');
   await page.waitForTimeout(700);
   const afterAdd = await page.$$eval('tr[data-line]', rs => rs.length);
@@ -816,6 +857,29 @@ try {
   const liveCount = await page.$$eval('#add-item-erp-results .autocomplete-item', els => els.length);
   check('and it searches that supplier without a reload', liveCount > 1, `${liveCount} suggestions`);
 
+  // The same line on the invoice screen, where a wrong pick also decides
+  // which ERP item the price is checked against.
+  await page.fill('#add-item-name', 'كريب سادة 19');
+  await page.waitForTimeout(700);
+  await page.locator('#add-item-erp-results .autocomplete-item').first().click();
+  await page.waitForTimeout(300);
+  const invPickedErp = await page.evaluate(() => {
+    const n = document.querySelector('#add-item-erp');
+    return { shown: n.style.display !== 'none', text: n.textContent.replace(/\s+/g, ' ').trim() };
+  });
+  check('picking an item on an invoice names its ERP item',
+        invPickedErp.shown && invPickedErp.text.includes('صنف ERP رقم 19'),
+        JSON.stringify(invPickedErp));
+
+  // A name the supplier has never had says it will be created instead.
+  await page.fill('#add-item-name', 'اسم لسه مش موجود عند المورد');
+  await page.waitForTimeout(700);
+  await page.locator('#add-item-erp-results .autocomplete-item').last().click();
+  await page.waitForTimeout(300);
+  const newItemLine = await page.$eval('#add-item-erp', el => el.textContent.replace(/\s+/g, ' ').trim());
+  check('a name new to the supplier says it will be created',
+        newItemLine.includes('صنف جديد'), newItemLine);
+
   // ---------- the price follows the unit it is labelled with ----------
   // Reported: picking an item filled a piece price, then switching to دستة
   // left the number alone under a "سعر دستة" label — so adding the line
@@ -973,6 +1037,16 @@ try {
         JSON.stringify(reviewDates));
 
   // A line with no name exports as a dash and is not a supplier item.
+  // The invoice add card works out its total the way the table does:
+  // quantity times the price of whichever unit is selected.
+  await page.fill('#add-qty', '2');
+  await page.fill('#add-price', '38');
+  await page.waitForTimeout(200);
+  const invAddTotal = await page.$eval('#add-total', el => el.textContent.trim());
+  check('the invoice add card works out the line total too', invAddTotal === '76.00', invAddTotal);
+  await page.fill('#add-qty', '');
+  await page.fill('#add-price', '');
+
   const rowsBeforeAdd = await page.$$eval('tr[data-line]', els => els.length);
   await page.fill('#add-qty', '3');
   await page.click('#btn-add-line');

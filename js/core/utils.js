@@ -135,6 +135,28 @@ export function submitOnce(button, handler, { busyLabel = 'جارِ الحفظ..
   };
 }
 
+// Names the ERP item behind the supplier item just picked on an add card.
+// The suggestion list carries it, but only while the list is open — after
+// picking, the field holds the supplier's name for the thing and nothing
+// says which ERP item it will be filed against, so choosing the wrong row
+// only showed up once the line was on the return.
+//   picked with a link  -> names the ERP item
+//   picked without one  -> says so, since it exports and posts unlinked
+//   a name being added  -> says it will be created for this supplier
+//   nothing picked      -> hidden
+export function renderPickedErp(node, { state = 'none', erpName = '' } = {}) {
+  if (!node) return;
+  if (state === 'none') { node.style.display = 'none'; node.innerHTML = ''; return; }
+  node.style.display = '';
+  if (state === 'linked') {
+    node.innerHTML = `صنف ERP: <b>${escapeHtml(erpName)}</b>`;
+  } else if (state === 'new') {
+    node.innerHTML = 'صنف جديد — هيتسجّل عند المورد من غير ربط ERP';
+  } else {
+    node.innerHTML = '<span class="badge badge-warn">⚠️ مش مربوط بصنف ERP</span>';
+  }
+}
+
 // Closes any open autocomplete dropdown when the click lands outside it.
 // Registered per screen render and returned as a disposer — the previous
 // version used { once: true }, which meant the very first click anywhere

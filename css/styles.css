@@ -361,6 +361,12 @@ table.data-table tr.row-link{ cursor:pointer; }
 .field{ margin-bottom:14px; }
 .field label{ display:block; font-size:12.5px; font-weight:700; color:var(--text-600); margin-bottom:5px; }
 .field .hint{ font-size:11px; color:var(--text-400); margin-top:4px; }
+/* Under an add card's item field: which ERP item the supplier item you
+   just picked is linked to. The suggestion list shows it while the list
+   is open and it disappears the moment you pick, so without this a wrong
+   pick is invisible until the line is already on the return. */
+.picked-erp{ font-size:12px; color:var(--text-600); margin-top:6px; line-height:1.6; }
+.picked-erp b{ color:var(--text-900); }
 input[type=text], input[type=number], input[type=date], input[type=datetime-local],
 input[type=search], select, textarea{
   width:100%;
@@ -373,6 +379,28 @@ input[type=search], select, textarea{
   color:var(--text-900);
 }
 input:focus, select:focus, textarea:focus{ border-color:var(--gold); }
+/* A worked-out value sitting in a row of fields — what the line being
+   typed will come to. Shaped like an input so the row still reads as one,
+   dashed and tinted because there is nothing to type into it. */
+.field-readout{
+  width:100%;
+  /* The add rows set align-items:flex-end, which on a phone (where the row
+     becomes a column) makes every field shrink to its content — an input
+     still has its own intrinsic width, a div holding "10.00" does not. The
+     minimum keeps this reading as a field rather than a stray number. */
+  min-width:120px;
+  box-sizing:border-box;
+  padding:9px 12px;
+  border:1px dashed var(--line-strong);
+  border-radius:var(--radius-s);
+  background:var(--paper);
+  font-family:var(--font-mono);
+  font-size:13.5px;
+  font-weight:700;
+  color:var(--text-900);
+  text-align:center;
+  white-space:nowrap;
+}
 textarea{ resize:vertical; min-height:70px; }
 .form-row{ display:flex; gap:12px; }
 .form-row > .field{ flex:1; }
