@@ -187,4 +187,12 @@ for (let i = 1; i <= 30; i++) {
     qty: 2, unitKey: 'dozen', price: 50, createdAt: iso('2026-08-01'),
   });
 }
+// A review as it exists the moment it is created: no supplier yet. This is
+// the state in which the item field is drawn disabled, so it is the one
+// that proves the field comes alive once a supplier is picked.
+store('invoiceReviews').set('ivnew', {
+  id: 'ivnew', reviewNumber: 'INV-2026-00031', supplierId: null, supplierName: '',
+  invoiceNumber: '', erpEntered: false, erpEnteredAt: null, photo: null,
+  createdAt: iso('2026-08-02'), updatedAt: iso('2026-08-02'),
+});
 store('counters').set('INV-2026', { name: 'INV-2026', value: 30 });

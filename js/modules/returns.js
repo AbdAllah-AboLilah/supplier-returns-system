@@ -647,7 +647,7 @@ export async function renderReturnDetail(container, returnId) {
                     : `<div class="mt-8"><button class="btn btn-sm btn-ghost line-toggle-received" data-id="${l.id}">⏳ لسه — دوس لما تستلم</button></div>`
                   ) : ''}
               </td>
-              ${editable ? `<td><button class="btn btn-sm btn-ghost line-remove" data-id="${l.id}">حذف</button></td>` : ''}
+              ${editable ? `<td><button class="btn btn-sm btn-ghost line-remove" data-id="${l.id}" data-name="${escapeHtml(l.supplierItemName || '')}">حذف</button></td>` : ''}
             </tr>
           `).join('')}
         </tbody>
@@ -816,7 +816,11 @@ function wireDetailEvents(container, ret, lines, supplier) {
     await renderReturnDetail(container, ret.id);
   }, { busyLabel: 'جارِ التحديث...' }));
 
+  // Same single-tap delete as the invoice screen had: confirm first, since
+  // a line carries a quantity and a cost that were typed by hand.
   qsa('.line-remove', container).forEach(b => b.addEventListener('click', guarded(async () => {
+    const name = b.dataset.name || 'الصنف';
+    if (!(await confirmDialog(`هيتشال "${name}" من المرتجعة. تمام؟`, { okLabel: 'حذف', danger: true }))) return;
     await removeLine(b.dataset.id);
     renderReturnDetail(container, ret.id);
   })));

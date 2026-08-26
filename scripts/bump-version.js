@@ -63,11 +63,15 @@ sw = sw.replace(/const CACHE_NAME = 'returns-system-v[\d.]+'/, `const CACHE_NAME
 fs.writeFileSync(swPath, sw);
 
 // CHANGELOG.md
-// An optional second argument becomes the entry text — CI passes the
-// commit subject, so the auto-generated entries say what actually
-// changed instead of a generic "تحديث تلقائي.".
-const note = (process.argv[3] || '').trim() || 'تحديث تلقائي.';
-const entry = `## ${nextStr} — ${today}\n\n- ${note}\n\n`;
+// The arguments after the bump type become the entry text — CI passes
+// every "سجل:" line from the commits being released, so the entries say
+// what actually changed instead of a generic "تحديث تلقائي.".
+// Every argument after the bump type is one changelog line, so a pull
+// request carrying several changes lists them rather than merging them
+// into one sentence.
+const notes = process.argv.slice(3).map(n => String(n).trim()).filter(Boolean);
+if (!notes.length) notes.push('تحديث تلقائي.');
+const entry = `## ${nextStr} — ${today}\n\n${notes.map(n => `- ${n}`).join('\n')}\n\n`;
 const existingChangelog = fs.existsSync(changelogPath) ? fs.readFileSync(changelogPath, 'utf8') : '# سجل الإصدارات\n\n';
 const headerEnd = existingChangelog.indexOf('\n\n') + 2;
 const updatedChangelog = existingChangelog.slice(0, headerEnd) + entry + existingChangelog.slice(headerEnd);
