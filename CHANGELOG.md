@@ -1,5 +1,9 @@
 # سجل الإصدارات
 
+## 1.17.3 — 2026-08-26
+
+- Fix mixed numerals, broken report images, mobile printing and clipped suggestions
+
 ## 1.17.2 — 2026-08-26
 
 - Add a browser smoke suite and gate the version bump on it

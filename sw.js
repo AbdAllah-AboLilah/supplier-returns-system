@@ -9,7 +9,7 @@
 // "auto-update" actually work); when offline you fall back to
 // whatever was last cached.
 // =========================================================
-const CACHE_NAME = 'returns-system-v1.17.2';
+const CACHE_NAME = 'returns-system-v1.17.3';
 const APP_SHELL = [
   './',
   './index.html',
