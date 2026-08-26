@@ -382,7 +382,17 @@ textarea{ resize:vertical; min-height:70px; }
 .autocomplete-list{
   position:absolute; z-index:60; top:calc(100% + 4px); right:0; left:0;
   background:#fff; border:1px solid var(--line-strong); border-radius:var(--radius-s);
-  box-shadow:var(--shadow-2); max-height:240px; overflow-y:auto;
+  box-shadow:var(--shadow-2); max-height:min(48vh, 320px); overflow-y:auto;
+  overscroll-behavior:contain;
+}
+/* Inside a modal the body is a scroll container (overflow-y:auto), and a
+   scroll container clips absolutely positioned children — which is why
+   the ERP search results were cut off after barely one row on a phone.
+   In a modal the list flows in the document instead, so nothing can clip
+   it: it shows several results and scrolls on its own. */
+.modal-body .autocomplete-list{
+  position:static; margin-top:6px; box-shadow:none;
+  max-height:min(42vh, 300px);
 }
 .autocomplete-item{ padding:9px 12px; font-size:13px; cursor:pointer; border-bottom:1px solid var(--line); }
 .autocomplete-item:last-child{ border-bottom:none; }

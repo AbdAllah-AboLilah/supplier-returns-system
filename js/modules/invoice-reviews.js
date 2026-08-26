@@ -15,11 +15,12 @@
 import { getAll, getById, put, remove, getByIndex, removeWhere, getSetting, setSetting, nextSequence } from '../core/db.js';
 import { uid, nowIso, fmtMoney, fmtInt, fmtDate, escapeHtml, fuzzyIncludes, debounce,
          openModal, confirmDialog, toast, paginate, renderPagination, qs, qsa,
-         renderPreservingFocus, guarded, closeOnOutsideClick } from '../core/utils.js';
+         renderPreservingFocus, guarded, closeOnOutsideClick, printHtmlDocument } from '../core/utils.js';
 import { autosaveField } from '../core/autosave.js';
 import { navigate } from '../core/router.js';
 import { openSupplierForm } from './suppliers.js';
 import { findErpItems } from './item-links.js';
+import { drawReport, canvasToBlob } from './report-canvas.js';
 
 const DEFAULT_UNITS = [
   { key: 'piece', label: 'قطعة', multiplier: 1 },
@@ -695,62 +696,41 @@ async function copyReviewText(review, items, units, suppliers) {
   }
 }
 
-function buildReviewReportElement(review, items, units, suppliers) {
+async function renderReviewToBlob(review, items, units, suppliers) {
   const supplierName = review.supplierId ? (suppliers.find(s => s.id === review.supplierId)?.name || review.supplierName) : (review.supplierName || '—');
   const totalQty = items.reduce((s, i) => s + computeLine(i, units).actualQty, 0);
   const totalValue = items.reduce((s, i) => s + computeLine(i, units).total, 0);
-  const wrap = document.createElement('div');
-  wrap.style.cssText = `direction:rtl;background:#fff;padding:24px;font-family:'Tajawal',system-ui,sans-serif;color:#161C2E;width:620px;`;
-  wrap.innerHTML = `
-    <div style="border-bottom:2px solid #1F2A44;padding-bottom:10px;margin-bottom:12px;">
-      <div style="font-weight:900;font-size:16px;">مراجعة فاتورة ${escapeHtml(review.reviewNumber)}</div>
-      <div style="font-size:12px;color:#5B6479;margin-top:3px;">${escapeHtml(supplierName)}${review.invoiceNumber ? ` · فاتورة رقم ${escapeHtml(review.invoiceNumber)}` : ''}</div>
-    </div>
-    <table style="width:100%;border-collapse:collapse;font-size:12.5px;">
-      <thead><tr>
-        <th style="text-align:right;padding:5px;border-bottom:1px solid #CBD1DE;color:#5B6479;font-size:10.5px;">الصنف</th>
-        <th style="text-align:right;padding:5px;border-bottom:1px solid #CBD1DE;color:#5B6479;font-size:10.5px;">الكمية</th>
-        <th style="text-align:right;padding:5px;border-bottom:1px solid #CBD1DE;color:#5B6479;font-size:10.5px;">الوحدة</th>
-        <th style="text-align:right;padding:5px;border-bottom:1px solid #CBD1DE;color:#5B6479;font-size:10.5px;">الكمية الفعلية</th>
-        <th style="text-align:right;padding:5px;border-bottom:1px solid #CBD1DE;color:#5B6479;font-size:10.5px;">السعر</th>
-        <th style="text-align:right;padding:5px;border-bottom:1px solid #CBD1DE;color:#5B6479;font-size:10.5px;">الإجمالي</th>
-      </tr></thead>
-      <tbody>
-        ${items.map(i => {
-          const c = computeLine(i, units);
-          return `<tr>
-            <td style="padding:5px;border-bottom:1px solid #E3E6EC;font-weight:700;">${i.itemName ? escapeHtml(i.itemName) : '—'}</td>
-            <td style="padding:5px;border-bottom:1px solid #E3E6EC;font-weight:600;">${fmtInt(c.qty)}</td>
-            <td style="padding:5px;border-bottom:1px solid #E3E6EC;font-weight:600;">${escapeHtml(c.unit.label)}</td>
-            <td style="padding:5px;border-bottom:1px solid #E3E6EC;font-weight:600;">${fmtInt(c.actualQty)} قطعة</td>
-            <td style="padding:5px;border-bottom:1px solid #E3E6EC;font-weight:600;">${fmtMoney(c.price)}</td>
-            <td style="padding:5px;border-bottom:1px solid #E3E6EC;font-weight:700;">${fmtMoney(c.total)}</td>
-          </tr>`;
-        }).join('')}
-      </tbody>
-    </table>
-    <div style="display:flex;justify-content:space-between;margin-top:12px;padding-top:8px;border-top:2px solid #1F2A44;font-weight:900;font-size:14px;">
-      <span>إجمالي الكمية: ${fmtInt(totalQty)} قطعة</span><span>الإجمالي: ${fmtMoney(totalValue)} جنيه</span>
-    </div>
-  `;
-  return wrap;
-}
 
-async function renderReviewToBlob(review, items, units, suppliers) {
-  if (typeof html2canvas === 'undefined') throw new Error('html2canvas not loaded');
-  const el = buildReviewReportElement(review, items, units, suppliers);
-  el.style.position = 'fixed'; el.style.top = '0'; el.style.left = '-9999px';
-  document.body.appendChild(el);
-  try {
-    const canvas = await html2canvas(el, { scale: 2, backgroundColor: '#ffffff' });
-    return await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
-  } finally {
-    el.remove();
-  }
+  const canvas = await drawReport({
+    title: `مراجعة فاتورة ${review.reviewNumber}`,
+    subtitle: `${supplierName}${review.invoiceNumber ? ` · فاتورة رقم ${review.invoiceNumber}` : ''}`,
+    dateLabel: fmtDate(review.createdAt),
+    columns: [
+      { key: 'itemName', label: 'الصنف', flex: true, strong: true },
+      { key: 'qty', label: 'الكمية' },
+      { key: 'unit', label: 'الوحدة' },
+      { key: 'actualQty', label: 'الكمية الفعلية' },
+      { key: 'price', label: 'السعر' },
+      { key: 'total', label: 'الإجمالي' },
+    ],
+    rows: items.map(i => {
+      const c = computeLine(i, units);
+      return {
+        itemName: i.itemName || '—',
+        qty: fmtInt(c.qty),
+        unit: c.unit.label,
+        actualQty: `${fmtInt(c.actualQty)} قطعة`,
+        price: fmtMoney(c.price),
+        total: fmtMoney(c.total),
+      };
+    }),
+    footerRight: `إجمالي الكمية: ${fmtInt(totalQty)} قطعة`,
+    footerLeft: `الإجمالي: ${fmtMoney(totalValue)} جنيه`,
+  });
+  return canvasToBlob(canvas);
 }
 
 async function downloadReviewImage(review, items, units, suppliers) {
-  if (typeof html2canvas === 'undefined') { toast('تعذّر تحميل مكتبة الصور، تحقق من الاتصال بالإنترنت', 'error'); return; }
   try {
     const blob = await renderReviewToBlob(review, items, units, suppliers);
     if (!blob) { toast('تعذّر إنشاء الصورة', 'error'); return; }
@@ -767,7 +747,6 @@ async function downloadReviewImage(review, items, units, suppliers) {
 }
 
 async function shareReviewImage(review, items, units, suppliers) {
-  if (typeof html2canvas === 'undefined') { toast('تعذّر تحميل مكتبة الصور، تحقق من الاتصال بالإنترنت', 'error'); return; }
   try {
     const blob = await renderReviewToBlob(review, items, units, suppliers);
     if (!blob) { toast('تعذّر إنشاء الصورة', 'error'); return; }
@@ -792,14 +771,17 @@ async function shareReviewImage(review, items, units, suppliers) {
   }
 }
 
-function printReview(review, items, units, suppliers) {
+async function printReview(review, items, units, suppliers) {
   const text = reviewSummaryText(review, items, units, suppliers);
-  const win = window.open('', '_blank', 'width=420,height=640');
-  if (!win) { toast('المتصفح منع فتح نافذة الطباعة', 'error'); return; }
-  win.document.write(`
+  const html = `
     <!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>${escapeHtml(review.reviewNumber)}</title>
     <style>body{font-family:Tahoma,Arial,sans-serif;padding:16px;white-space:pre-wrap;font-size:14px;line-height:1.6;}</style>
-    </head><body>${escapeHtml(text)}<script>window.onload=()=>window.print();</script></body></html>
-  `);
-  win.document.close();
+    </head><body>${escapeHtml(text)}</body></html>
+  `;
+  try {
+    await printHtmlDocument(html);
+  } catch (err) {
+    console.error(err);
+    toast('تعذّر فتح الطباعة على هذا المتصفح', 'error');
+  }
 }

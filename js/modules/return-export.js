@@ -2,8 +2,8 @@
 // modules/return-export.js
 // Four ways to get a return's report out of the system:
 //   1. Excel (.xlsx)               — via SheetJS (loaded globally as XLSX)
-//   2. Image (.png)                — via html2canvas, renders an
-//                                     off-screen report and captures it
+//   2. Image (.png)                — drawn directly onto a canvas
+//                                     (see report-canvas.js)
 //   3. WhatsApp                    — same image, handed to the native
 //                                     share sheet (Web Share API)
 //   4. Thermal receipt print view  — a narrow (80mm) print-only page
@@ -12,8 +12,9 @@
 // in the export modal (e.g. hide cost columns before handing a copy
 // to a driver).
 // =========================================================
-import { fmtMoney, fmtInt, fmtDate, escapeHtml, openModal, toast, qs, qsa } from '../core/utils.js';
+import { fmtMoney, fmtInt, fmtDate, escapeHtml, openModal, toast, qs, qsa, printHtmlDocument } from '../core/utils.js';
 import { getSetting } from '../core/db.js';
+import { drawReport, canvasToBlob } from './report-canvas.js';
 
 const COLUMNS = [
   { key: 'supplierName', label: 'اسم الصنف عند المورد' },
@@ -128,54 +129,48 @@ export async function exportToExcel(ret, supplier, lines, keys) {
 
 // ---------- 2. Image ----------
 
-function buildReportElement(shopName, ret, supplier, lines, keys, { compact = false } = {}) {
-  const cols = COLUMNS.filter(c => keys.includes(c.key));
+// Column definitions the canvas renderer understands. Text columns are
+// flexible (they absorb spare width and wrap); numbers stay at their
+// natural width so they line up.
+const CANVAS_COLUMNS = {
+  supplierName: { label: 'اسم الصنف عند المورد', flex: true, strong: true },
+  erpName: { label: 'صنف النظام ERP', flex: true },
+  qty: { label: 'الكمية' },
+  cost: { label: 'تكلفة المورد' },
+  total: { label: 'الإجمالي' },
+};
+
+function reportSpec(shopName, ret, supplier, lines, keys) {
+  const columns = Object.entries(CANVAS_COLUMNS)
+    .filter(([key]) => keys.includes(key))
+    .map(([key, def]) => ({ key, ...def }));
   const total = lines.reduce((s, l) => s + (Number(l.total) || 0), 0);
   const totalQty = lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
-  const wrap = document.createElement('div');
-  wrap.style.cssText = `direction:rtl;background:#fff;padding:${compact ? '14px' : '28px'};font-family:'Tajawal',system-ui,sans-serif;color:#161C2E;width:${compact ? '300px' : '640px'};`;
-  wrap.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;border-bottom:2px solid #1F2A44;padding-bottom:12px;margin-bottom:14px;">
-      <div>
-        ${shopName ? `<div style="font-weight:900;font-size:${compact ? '12px' : '14px'};color:#5B6479;margin-bottom:2px;">${escapeHtml(shopName)}</div>` : ''}
-        <div style="font-weight:900;font-size:${compact ? '15px' : '18px'};">مرتجعة ${escapeHtml(ret.returnNumber)}</div>
-        <div style="font-size:${compact ? '11px' : '13px'};color:#5B6479;margin-top:4px;font-weight:600;">${escapeHtml(supplier?.name || '—')}</div>
-      </div>
-      <div style="font-size:${compact ? '10px' : '12px'};color:#5B6479;text-align:left;font-weight:600;">${fmtDate(ret.createdAt, true)}</div>
-    </div>
-    <table style="width:100%;border-collapse:collapse;font-size:${compact ? '10.5px' : '13px'};">
-      <thead>
-        <tr>${cols.map(c => `<th style="text-align:right;padding:6px 8px;border-bottom:1px solid #CBD1DE;color:#5B6479;font-size:${compact ? '9.5px' : '11px'};font-weight:700;">${escapeHtml(c.label)}</th>`).join('')}</tr>
-      </thead>
-      <tbody>
-        ${lines.map(l => `<tr>${cols.map(c => `<td style="padding:6px 8px;border-bottom:1px solid #E3E6EC;font-weight:${c.key === 'supplierName' ? 700 : 600};">${c.key === 'cost' || c.key === 'total' ? fmtMoney(cellValue(l, c.key)) : c.key === 'qty' ? fmtInt(cellValue(l, c.key)) : escapeHtml(String(cellValue(l, c.key)))}</td>`).join('')}</tr>`).join('')}
-      </tbody>
-    </table>
-    <div style="display:flex;justify-content:space-between;margin-top:14px;padding-top:10px;border-top:2px solid #1F2A44;font-weight:900;font-size:${compact ? '12px' : '15px'};">
-      ${keys.includes('qty') ? `<span>إجمالي الكمية: ${fmtInt(totalQty)}</span>` : '<span></span>'}
-      ${keys.includes('total') ? `<span>الإجمالي: ${fmtMoney(total)} جنيه</span>` : ''}
-    </div>
-  `;
-  return wrap;
+
+  return {
+    shopName,
+    title: `مرتجعة ${ret.returnNumber}`,
+    subtitle: supplier?.name || '—',
+    dateLabel: fmtDate(ret.createdAt, true),
+    columns,
+    rows: lines.map(l => ({
+      supplierName: l.supplierItemName,
+      erpName: l.erpItemName || 'غير مرتبط',
+      qty: fmtInt(l.qty),
+      cost: fmtMoney(l.unitCost),
+      total: fmtMoney(l.total),
+    })),
+    footerRight: keys.includes('qty') ? `إجمالي الكمية: ${fmtInt(totalQty)}` : '',
+    footerLeft: keys.includes('total') ? `الإجمالي: ${fmtMoney(total)} جنيه` : '',
+  };
 }
 
 async function renderReportToBlob(shopName, ret, supplier, lines, keys) {
-  if (typeof html2canvas === 'undefined') throw new Error('html2canvas not loaded');
-  const el = buildReportElement(shopName, ret, supplier, lines, keys);
-  el.style.position = 'fixed';
-  el.style.top = '0';
-  el.style.left = '-9999px';
-  document.body.appendChild(el);
-  try {
-    const canvas = await html2canvas(el, { scale: 2, backgroundColor: '#ffffff' });
-    return await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'));
-  } finally {
-    el.remove();
-  }
+  const canvas = await drawReport(reportSpec(shopName, ret, supplier, lines, keys));
+  return canvasToBlob(canvas);
 }
 
 export async function exportToImage(ret, supplier, lines, keys) {
-  if (typeof html2canvas === 'undefined') { toast('تعذّر تحميل مكتبة تصدير الصور، تحقق من الاتصال بالإنترنت', 'error'); return; }
   try {
     const shopName = await getSetting('shopName', '');
     const blob = await renderReportToBlob(shopName, ret, supplier, lines, keys);
@@ -203,7 +198,6 @@ export async function exportToImage(ret, supplier, lines, keys) {
 // desktop), this falls back to downloading the image and opening
 // WhatsApp with a reminder to attach it manually.
 export async function shareReportImage(ret, supplier, lines, keys) {
-  if (typeof html2canvas === 'undefined') { toast('تعذّر تحميل مكتبة الصور، تحقق من الاتصال بالإنترنت', 'error'); return; }
   try {
     const shopName = await getSetting('shopName', '');
     const blob = await renderReportToBlob(shopName, ret, supplier, lines, keys);
@@ -245,9 +239,6 @@ export async function openThermalPrintView(ret, supplier, lines, keys) {
   const shopName = await getSetting('shopName', '');
   const total = lines.reduce((s, l) => s + (Number(l.total) || 0), 0);
   const totalQty = lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
-  const win = window.open('', '_blank', 'width=380,height=640');
-  if (!win) { toast('المتصفح منع فتح نافذة الطباعة، اسمح بالنوافذ المنبثقة وحاول مجددًا', 'error'); return; }
-
   // Kept deliberately simple: no flexbox, no fixed mm widths, no
   // margin set in two places at once. Thermal receipt drivers vary a
   // lot in what they render correctly — a fluid width with a single
@@ -278,7 +269,7 @@ export async function openThermalPrintView(ret, supplier, lines, keys) {
   `;
   }).join('');
 
-  win.document.write(`
+  const html = `
     <!DOCTYPE html>
     <html lang="ar" dir="rtl"><head><meta charset="UTF-8">
     <title>${escapeHtml(ret.returnNumber)}</title>
@@ -311,8 +302,6 @@ export async function openThermalPrintView(ret, supplier, lines, keys) {
       .tp-row td { font-size: 12px; font-weight: 700; padding: 0 1px; text-align: center; }
       .tp-grand-row { width: 100%; border-collapse: collapse; table-layout: fixed; margin-top: 5px; padding-top: 4px; border-top: 1px solid #000; }
       .tp-grand-row td { font-size: 14px; font-weight: 900; text-align: center; padding: 0; }
-      .tp-print-btn { display: block; width: 100%; margin-top: 14px; padding: 10px; font-size: 13px; }
-      @media print { .tp-print-btn { display: none; } }
     </style></head>
     <body>
       <table class="tp-letterhead"><tr>
@@ -333,9 +322,13 @@ export async function openThermalPrintView(ret, supplier, lines, keys) {
         ${keys.includes('qty') ? `<td>الكمية: ${fmtInt(totalQty)}</td>` : ''}
         ${keys.includes('total') ? `<td>الإجمالي: ${fmtMoney(total)}</td>` : ''}
       </tr></table>` : ''}
-      <button class="tp-print-btn" onclick="window.print()">🖨 طباعة</button>
     </body></html>
-  `);
-  win.document.close();
-  win.onload = () => { try { win.focus(); win.print(); } catch (e) {} };
+  `;
+
+  try {
+    await printHtmlDocument(html);
+  } catch (err) {
+    console.error(err);
+    toast('تعذّر فتح الطباعة على هذا المتصفح', 'error');
+  }
 }

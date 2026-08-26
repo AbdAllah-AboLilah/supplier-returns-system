@@ -186,6 +186,77 @@ try {
   const groupCards = await page.$$eval('#supplier-groups .card', cs => cs.length);
   check('all-supplier-items groups by supplier', groupCards >= 3, `groups=${groupCards}`);
 
+  // ---------- one numeral system across the whole UI ----------
+  await goto('/returns/r1');
+  await page.waitForTimeout(600);
+  const numerals = await page.evaluate(() => {
+    const arabicIndic = /[\u0660-\u0669]/;
+    const offenders = [];
+    document.querySelectorAll('#app-content td, #app-content .stat-value, #app-content .small').forEach(el => {
+      if (el.querySelector('input, select')) return;      // inputs always render Latin digits
+      if (arabicIndic.test(el.textContent)) offenders.push(el.textContent.trim().slice(0, 40));
+    });
+    return offenders;
+  });
+  check('no mixed numerals on screen', numerals.length === 0, numerals.slice(0, 3).join(' | '));
+
+  // ---------- report image draws Arabic with its spaces intact ----------
+  const imageCheck = await page.evaluate(async () => {
+    const { drawReport } = await import('/js/modules/report-canvas.js');
+    const canvas = await drawReport({
+      title: 'مرتجعة RET-2026-00012',
+      subtitle: 'مصنع سلمي',
+      columns: [{ key: 'name', label: 'اسم الصنف عند المورد', flex: true }, { key: 'qty', label: 'الكمية' }],
+      rows: [{ name: 'بدي تُل مبطن', qty: '19' }],
+    });
+    // fillText hands the string to the browser's text engine, so a
+    // spaced phrase must measure wider than the same letters unspaced —
+    // that difference is exactly what html2canvas used to lose.
+    const ctx = canvas.getContext('2d');
+    ctx.font = "700 13px 'Tajawal', sans-serif";
+    const spaced = ctx.measureText('اسم الصنف عند المورد').width;
+    const glued = ctx.measureText('اسمالصنفعندالمورد').width;
+    return { ok: canvas.width > 0 && canvas.height > 0 && spaced > glued, spaced, glued, w: canvas.width, h: canvas.height };
+  });
+  check('report image renders Arabic with spacing', imageCheck.ok, `canvas ${imageCheck.w}x${imageCheck.h}`);
+
+  // ---------- printing needs no popup ----------
+  const printCheck = await page.evaluate(async () => {
+    const { printHtmlDocument } = await import('/js/core/utils.js');
+    let popupOpened = false;
+    const realOpen = window.open;
+    window.open = () => { popupOpened = true; return null; };
+    let threw = false;
+    await printHtmlDocument('<!DOCTYPE html><html><body>اختبار الطباعة</body></html>').catch(() => { threw = true; });
+    window.open = realOpen;
+    return { popupOpened, threw };
+  });
+  check('printing does not rely on a popup', printCheck.popupOpened === false && !printCheck.threw, JSON.stringify(printCheck));
+
+  // ---------- suggestions inside a modal are not clipped ----------
+  await goto('/supplier-items');
+  await page.waitForTimeout(700);
+  await page.locator('.btn-link').first().click();
+  await page.waitForTimeout(400);
+  await page.type('#erp-search', 'صنف', { delay: 40 });
+  await page.waitForTimeout(500);
+  const dropdown = await page.evaluate(() => {
+    const list = document.querySelector('.modal-body .autocomplete-list');
+    if (!list) return { found: false };
+    const body = list.closest('.modal-body').getBoundingClientRect();
+    const rect = list.getBoundingClientRect();
+    return {
+      found: true,
+      items: list.querySelectorAll('.autocomplete-item').length,
+      height: Math.round(rect.height),
+      // nothing of the list may fall outside the scroll container's box
+      clipped: rect.bottom > body.bottom + 1,
+    };
+  });
+  check('modal suggestions show several rows unclipped',
+        dropdown.found && dropdown.items >= 3 && dropdown.height > 120 && !dropdown.clipped,
+        JSON.stringify(dropdown));
+
   check('no console or page errors', pageErrors.length === 0, pageErrors.slice(0, 3).join(' | '));
 } catch (err) {
   check('suite ran to completion', false, err.message.split('\n')[0]);

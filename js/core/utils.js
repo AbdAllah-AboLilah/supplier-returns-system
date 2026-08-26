@@ -11,22 +11,30 @@ export function nowIso() {
   return new Date().toISOString();
 }
 
+// Arabic locale, Latin digits. Plain 'ar-EG' formats with Arabic-Indic
+// numerals (١٩٠٠٫٠٠), but <input type="number"> always shows Latin ones
+// whatever the locale — so the same figure appeared as ١٩ in the box you
+// type in and ١٩٠٠٫٠٠ in the total beside it, and the Arabic thousands
+// and decimal marks (٬ ٫) are easy to confuse with each other. One
+// numeral system across every screen, export and printout.
+const NUM_LOCALE = 'ar-EG-u-nu-latn';
+
 export function fmtDate(iso, withTime = false) {
   if (!iso) return '—';
   const d = new Date(iso);
-  const date = d.toLocaleDateString('ar-EG', { year: 'numeric', month: '2-digit', day: '2-digit' });
+  const date = d.toLocaleDateString(NUM_LOCALE, { year: 'numeric', month: '2-digit', day: '2-digit' });
   if (!withTime) return date;
-  const time = d.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' });
+  const time = d.toLocaleTimeString(NUM_LOCALE, { hour: '2-digit', minute: '2-digit' });
   return `${date} ${time}`;
 }
 
 export function fmtMoney(n) {
   const v = Number(n) || 0;
-  return v.toLocaleString('ar-EG', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return v.toLocaleString(NUM_LOCALE, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 export function fmtInt(n) {
-  return (Number(n) || 0).toLocaleString('ar-EG');
+  return (Number(n) || 0).toLocaleString(NUM_LOCALE);
 }
 
 export function escapeHtml(str) {
@@ -117,6 +125,38 @@ export function closeOnOutsideClick(boxes) {
   };
   document.addEventListener('click', handler);
   return () => document.removeEventListener('click', handler);
+}
+
+// Prints a standalone HTML document without opening a window.
+// window.open() is blocked by default on mobile browsers, which is why
+// printing a receipt from a phone only ever produced "المتصفح منع فتح
+// نافذة الطباعة". An offscreen iframe needs no popup permission and
+// prints with the document's own @page rules.
+export function printHtmlDocument(html) {
+  return new Promise((resolve, reject) => {
+    const frame = document.createElement('iframe');
+    frame.setAttribute('aria-hidden', 'true');
+    frame.style.cssText = 'position:fixed;left:-9999px;bottom:0;width:80mm;height:0;border:0;';
+    let settled = false;
+    const finish = (err) => {
+      if (settled) return;
+      settled = true;
+      setTimeout(() => frame.remove(), 2000); // let the print dialog read the document first
+      err ? reject(err) : resolve();
+    };
+    frame.onload = () => {
+      try {
+        frame.contentWindow.focus();
+        frame.contentWindow.print();
+        finish();
+      } catch (err) {
+        finish(err);
+      }
+    };
+    frame.onerror = () => finish(new Error('تعذّر تجهيز صفحة الطباعة'));
+    document.body.appendChild(frame);
+    frame.srcdoc = html;
+  });
 }
 
 export function el(html) {
