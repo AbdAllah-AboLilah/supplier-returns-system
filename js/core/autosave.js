@@ -21,21 +21,27 @@ export function autosaveField(inputEl, saveFn, { delay = 600, statusEl = null } 
     statusEl.className = `autosave-status ${cls || ''}`;
   }
 
-  async function commit({ force = false } = {}) {
+  // The save currently on its way to the cloud, so callers can wait for it.
+  let inFlight = Promise.resolve();
+
+  function commit({ force = false } = {}) {
     const value = inputEl.value;
-    if (!force && value === lastSaved) return;
+    if (!force && value === lastSaved) return inFlight;
     const previous = lastSaved;
     lastSaved = value; // claim it up front so a blur landing mid-save doesn't repeat the write
     setStatus('جارِ الحفظ…', 'saving');
-    try {
-      await saveFn(value);
-      setStatus('✓ تم الحفظ', 'saved');
-      setTimeout(() => { if (statusEl && statusEl.textContent === '✓ تم الحفظ') setStatus('', ''); }, 2000);
-    } catch (err) {
-      console.error(err);
-      lastSaved = previous; // failed — let the next keystroke or blur retry it
-      setStatus('⚠ لم يتم الحفظ', 'error');
-    }
+    inFlight = (async () => {
+      try {
+        await saveFn(value);
+        setStatus('✓ تم الحفظ', 'saved');
+        setTimeout(() => { if (statusEl && statusEl.textContent === '✓ تم الحفظ') setStatus('', ''); }, 2000);
+      } catch (err) {
+        console.error(err);
+        lastSaved = previous; // failed — let the next keystroke or blur retry it
+        setStatus('⚠ لم يتم الحفظ', 'error');
+      }
+    })();
+    return inFlight;
   }
 
   inputEl.addEventListener('input', () => {
@@ -45,5 +51,17 @@ export function autosaveField(inputEl, saveFn, { delay = 600, statusEl = null } 
   // Also commit immediately on blur so a quick tab-away never waits out the debounce.
   inputEl.addEventListener('blur', () => { clearTimeout(timer); commit(); });
 
-  return { flushNow: () => commit({ force: true }) };
+  return {
+    flushNow: () => commit({ force: true }),
+    // Resolves once this field has nothing left to save: drops the
+    // debounce, writes the current value if it differs, and waits for any
+    // write already on its way. Anything that reads the stored record back
+    // — exporting, printing — awaits this first, otherwise it can read the
+    // value from just before the last keystroke.
+    settle: async () => {
+      clearTimeout(timer);
+      await commit();
+      await inFlight;
+    },
+  };
 }

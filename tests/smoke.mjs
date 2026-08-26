@@ -425,6 +425,54 @@ try {
   check('adding without a quantity is refused',
         linesAfterBlankAdd === linesBeforeBlankAdd, `${linesBeforeBlankAdd} -> ${linesAfterBlankAdd}`);
 
+  // ---------- an edit made a moment ago must reach the export ----------
+  // Editing a quantity deliberately does not re-render the screen, so the
+  // array it was drawn with goes stale; exporting has to read the return
+  // back. Typing and exporting immediately also races the debounced save.
+  await goto('/returns/r4');
+  await page.waitForTimeout(700);
+  const editedQty = await page.evaluate(() => {
+    const input = document.querySelector('.line-qty');
+    input.focus();
+    input.value = '77';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    return input.dataset.id;
+  });
+  // No wait at all — click straight away, exactly as a person would.
+  await page.click('#btn-export');
+  await page.waitForSelector('.modal .export-actions', { timeout: 10000 });
+  const exported = await page.evaluate(async (lineId) => {
+    const { collectExportLines } = await import('/js/modules/returns.js');
+    const db = await import('/js/core/db.js');
+    const ret = await db.getById('returns', 'r4');
+    const lines = await collectExportLines('r4', ret.supplierId);
+    const stored = await db.getById('returnItems', lineId);
+    return { exportedQty: lines.find(l => l.id === lineId)?.qty, storedQty: stored.qty };
+  }, editedQty);
+  check('an edit made a moment before exporting is in the export',
+        exported.exportedQty === 77 && exported.storedQty === 77, JSON.stringify(exported));
+  await page.click('.modal-close');
+  await page.waitForTimeout(300);
+
+  // settle() must not resolve before the value is actually stored.
+  const settled = await page.evaluate(async () => {
+    const { autosaveField } = await import('/js/core/autosave.js');
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    let saved = null;
+    const saver = autosaveField(input, async (value) => {
+      await new Promise(r => setTimeout(r, 120)); // a slow cloud write
+      saved = value;
+    }, { delay: 500 });
+    input.value = 'جديد';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    await saver.settle(); // before the 500ms debounce would have fired
+    const afterSettle = saved;
+    input.remove();
+    return { afterSettle };
+  });
+  check('settle() waits for the value to be stored', settled.afterSettle === 'جديد', JSON.stringify(settled));
+
   check('no console or page errors', pageErrors.length === 0, pageErrors.slice(0, 3).join(' | '));
 } catch (err) {
   check('suite ran to completion', false, err.message.split('\n')[0]);

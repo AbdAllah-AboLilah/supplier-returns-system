@@ -148,6 +148,18 @@ export function openNumberConverterModal() {
 export async function listReviews() {
   return getAll('invoiceReviews');
 }
+// A review line stores which ERP item it maps to, not that item's
+// barcode — resolve it here so the export can offer it as a column
+// without storing a copy that goes stale when a barcode is corrected.
+// Like the return screen, this view does not re-render on an inline edit,
+// so anything reporting on the review reads the lines back through here
+// rather than reusing the copy the screen was drawn with.
+export async function loadReviewItemsWithBarcodes(reviewId) {
+  const [rows, erpItems] = await Promise.all([getReviewItems(reviewId), getAll('erpItems')]);
+  const barcodeById = Object.fromEntries(erpItems.map(i => [i.id, i.barcode || '']));
+  return rows.map(i => ({ ...i, erpBarcode: i.erpItemId ? (barcodeById[i.erpItemId] || '') : '' }));
+}
+
 export async function getReviewItems(reviewId) {
   const rows = await getByIndex('invoiceReviewItems', 'reviewId', reviewId);
   return rows.sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
@@ -356,14 +368,9 @@ export async function renderInvoiceReviewsList(container) {
 export async function renderInvoiceReviewDetail(container, reviewId) {
   const review = await getById('invoiceReviews', reviewId);
   if (!review) { container.innerHTML = `<div class="card card-pad">المراجعة غير موجودة.</div>`; return; }
-  const [rawItems, suppliers, units, erpItems] = await Promise.all([
-    getReviewItems(reviewId), getAll('suppliers'), getUnits(), getAll('erpItems'),
+  const [items, suppliers, units] = await Promise.all([
+    loadReviewItemsWithBarcodes(reviewId), getAll('suppliers'), getUnits(),
   ]);
-  // A review line stores which ERP item it maps to, not that item's
-  // barcode — resolve it here so the export can offer it as a column
-  // without storing a copy that goes stale when a barcode is corrected.
-  const barcodeById = Object.fromEntries(erpItems.map(i => [i.id, i.barcode || '']));
-  const items = rawItems.map(i => ({ ...i, erpBarcode: i.erpItemId ? (barcodeById[i.erpItemId] || '') : '' }));
   const totalQty = items.reduce((s, i) => s + computeLine(i, units).actualQty, 0);
   const totalValue = items.reduce((s, i) => s + computeLine(i, units).total, 0);
 
@@ -538,8 +545,11 @@ function wireDetailEvents(container, review, items, units, suppliers) {
     });
   });
 
+  // Held so an export waits for a half-typed value to be written before
+  // it reads the review back.
+  const savers = [];
   const invNumberInput = qs('#f-invoice-number', container);
-  autosaveField(invNumberInput, (val) => updateReviewMeta(review.id, { invoiceNumber: val.trim() }), { statusEl: qs('#inv-status', container), delay: 500 });
+  savers.push(autosaveField(invNumberInput, (val) => updateReviewMeta(review.id, { invoiceNumber: val.trim() }), { statusEl: qs('#inv-status', container), delay: 500 }));
 
   qs('#photo-input', container).addEventListener('change', async (e) => {
     const file = e.target.files[0];
@@ -563,14 +573,14 @@ function wireDetailEvents(container, review, items, units, suppliers) {
     renderInvoiceReviewDetail(container, review.id);
   }));
 
-  qsa('.ln-qty', container).forEach(inp => autosaveField(inp, async (val) => {
+  qsa('.ln-qty', container).forEach(inp => savers.push(autosaveField(inp, async (val) => {
     await updateReviewItem(inp.dataset.id, { qty: Number(val) || 0 });
     recalcLine(container, inp.dataset.id, units);
-  }, { delay: 500 }));
-  qsa('.ln-price', container).forEach(inp => autosaveField(inp, async (val) => {
+  }, { delay: 500 })));
+  qsa('.ln-price', container).forEach(inp => savers.push(autosaveField(inp, async (val) => {
     await updateReviewItem(inp.dataset.id, { price: Number(val) || 0 });
     recalcLine(container, inp.dataset.id, units);
-  }, { delay: 500 }));
+  }, { delay: 500 })));
   qsa('.ln-unit', container).forEach(sel => sel.addEventListener('change', async () => {
     await updateReviewItem(sel.dataset.id, { unitKey: sel.value });
     recalcLine(container, sel.dataset.id, units);
@@ -633,10 +643,24 @@ function wireDetailEvents(container, review, items, units, suppliers) {
   }));
 
   const withBarcode = () => ({ showBarcode: qs('#exp-barcode', container)?.checked !== false });
-  qs('#btn-copy', container).addEventListener('click', () => copyReviewText(review, items, units, suppliers, withBarcode()));
-  qs('#btn-img', container).addEventListener('click', () => downloadReviewImage(review, items, units, suppliers, withBarcode()));
-  qs('#btn-whatsapp', container).addEventListener('click', () => shareReviewImage(review, items, units, suppliers, withBarcode()));
-  qs('#btn-print', container).addEventListener('click', () => printReview(review, items, units, suppliers, withBarcode()));
+
+  // Every export goes through here: settle whatever is mid-save (clicking
+  // the button blurs the field being typed into, which starts one), then
+  // read the review back so the export shows what it holds now — not the
+  // copy this screen was drawn with, which inline edits never update.
+  async function exportWith(run) {
+    await Promise.all(savers.map(saver => saver.settle()));
+    const [current, freshReview] = await Promise.all([
+      loadReviewItemsWithBarcodes(review.id),
+      getById('invoiceReviews', review.id),
+    ]);
+    await run(freshReview || review, current, withBarcode());
+  }
+
+  qs('#btn-copy', container).addEventListener('click', guarded(() => exportWith((rev, rows, opts) => copyReviewText(rev, rows, units, suppliers, opts))));
+  qs('#btn-img', container).addEventListener('click', guarded(() => exportWith((rev, rows, opts) => downloadReviewImage(rev, rows, units, suppliers, opts))));
+  qs('#btn-whatsapp', container).addEventListener('click', guarded(() => exportWith((rev, rows, opts) => shareReviewImage(rev, rows, units, suppliers, opts))));
+  qs('#btn-print', container).addEventListener('click', guarded(() => exportWith((rev, rows, opts) => printReview(rev, rows, units, suppliers, opts))));
 }
 
 function recalcLine(container, lineId, units) {

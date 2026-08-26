@@ -307,6 +307,17 @@ export async function deleteReturn(returnId) {
   await logAction('حذف مرتجعة', 'return', returnId, '');
 }
 
+// The detail screen deliberately does NOT re-render when a quantity or
+// cost is edited — that was the whole point of making editing fast. So
+// the `lines` array a screen was drawn with goes stale the moment you
+// type into it, and anything that reports on the return has to read the
+// lines back instead of using that copy.
+export async function collectExportLines(returnId, supplierId) {
+  const lines = await getReturnItems(returnId);
+  await syncLineErpLinks(lines, supplierId);
+  return lines;
+}
+
 // ---------- UI: list views ----------
 
 const listState = { page: 1, pageSize: 50, query: '', supplierFilter: '', dateFrom: '', dateTo: '' };
@@ -687,16 +698,19 @@ function wireDetailEvents(container, ret, lines, supplier) {
     renderReturnDetail(container, ret.id);
   }));
 
-  qsa('.line-qty', container).forEach(inp => autosaveField(inp, async (val) => {
+  // Held so the export can wait for a half-typed value to be written
+  // before it reads the return back.
+  const lineSavers = [];
+  qsa('.line-qty', container).forEach(inp => lineSavers.push(autosaveField(inp, async (val) => {
     await updateLine(inp.dataset.id, { qty: val });
     recalcRowAndTotals(container, inp.dataset.id);
-  }, { delay: 500 }));
-  qsa('.line-cost', container).forEach(inp => autosaveField(inp, async (val) => {
+  }, { delay: 500 })));
+  qsa('.line-cost', container).forEach(inp => lineSavers.push(autosaveField(inp, async (val) => {
     await updateLine(inp.dataset.id, { unitCost: val });
     inp.classList.remove('cost-fallback');
     inp.title = '';
     recalcRowAndTotals(container, inp.dataset.id);
-  }, { delay: 500 }));
+  }, { delay: 500 })));
   qsa('.line-remove', container).forEach(b => b.addEventListener('click', guarded(async () => {
     await removeLine(b.dataset.id);
     renderReturnDetail(container, ret.id);
@@ -806,12 +820,20 @@ function wireDetailEvents(container, ret, lines, supplier) {
   });
 
   const notesInput = qs('#ret-notes', container);
-  if (notesInput) autosaveField(notesInput, (val) => saveNotes(ret.id, val), { statusEl: qs('#notes-status', container) });
+  const notesSaver = notesInput
+    ? autosaveField(notesInput, (val) => saveNotes(ret.id, val), { statusEl: qs('#notes-status', container) })
+    : null;
 
-  // openExportOptionsModal looks the ERP barcodes up before it opens, so
-  // it is async now — guarded so a failed lookup says so instead of
-  // leaving the button doing nothing.
-  qs('#btn-export', container)?.addEventListener('click', guarded(() => openExportOptionsModal(ret, lines, supplier)));
+  qs('#btn-export', container)?.addEventListener('click', guarded(async () => {
+    // Clicking blurs whichever field was being typed into, which starts a
+    // save — wait for that, and for any debounced one, before reading.
+    await Promise.all(lineSavers.map(saver => saver.settle()));
+    if (notesSaver) await notesSaver.settle();
+    // Then export what the return actually holds now, not the copy this
+    // screen was drawn with (see collectExportLines).
+    const current = await collectExportLines(ret.id, ret.supplierId);
+    await openExportOptionsModal(ret, current, supplier);
+  }));
 
   qs('#btn-send', container)?.addEventListener('click', guarded(async () => {
     if (!(await confirmDialog(`سيتم إرسال المرتجعة ${ret.returnNumber} للمورد وقفل الأصناف. هل أنت متأكد؟`))) return;
