@@ -269,8 +269,8 @@ try {
     const others = Array.from(document.querySelectorAll('.col-toggle')).filter(c => c.value !== 'barcode');
     return { exists: !!box, checked: box ? box.checked : null, othersChecked: others.every(c => c.checked), count: others.length + (box ? 1 : 0) };
   });
-  check('return export offers a barcode column, unticked by default',
-        barcodeToggle.exists && barcodeToggle.checked === false && barcodeToggle.othersChecked,
+  check('return export offers a barcode column, ticked by default',
+        barcodeToggle.exists && barcodeToggle.checked === true && barcodeToggle.othersChecked,
         JSON.stringify(barcodeToggle));
 
   // The barcode itself comes from the linked ERP item, not the line.
@@ -303,7 +303,7 @@ try {
   check('a dozen price is divided into a piece price',
         priced.unit === 'dozen' && priced.unitPrice === '50' && priced.piece === '4.17' && priced.total === '100.00',
         JSON.stringify(priced));
-  check('invoice export offers a barcode column, unticked by default', priced.barcodeBox === false);
+  check('invoice export offers a barcode column, ticked by default', priced.barcodeBox === true);
 
   // Switching the unit to pieces makes the typed price the piece price.
   await page.selectOption('.ln-unit', 'piece');
@@ -311,9 +311,30 @@ try {
   const asPieces = await page.evaluate(() => ({
     piece: document.querySelector('[id^="ln-piece-"]')?.textContent.trim(),
     actual: document.querySelector('[id^="ln-actual-"]')?.textContent.trim(),
+    unitPrice: document.querySelector('.ln-price')?.value,
   }));
   check('switching to pieces makes the typed price the piece price',
-        asPieces.piece === '—' && asPieces.actual.startsWith('2'), JSON.stringify(asPieces));
+        asPieces.piece === '50.00' && asPieces.unitPrice === '50' && asPieces.actual === '2 قطعة',
+        JSON.stringify(asPieces));
+
+  // ---------- which price column carries the dash ----------
+  const spec = await page.evaluate(async () => {
+    const { buildReviewReportSpec } = await import('/js/modules/invoice-reviews.js');
+    const units = [{ key: 'piece', label: 'قطعة', multiplier: 1 }, { key: 'dozen', label: 'دستة', multiplier: 12 }];
+    const items = [
+      { id: 'a', itemName: 'بالدستة', erpBarcode: '111', qty: 2, unitKey: 'dozen', price: 930 },
+      { id: 'b', itemName: 'بالقطعة', erpBarcode: '222', qty: 5, unitKey: 'piece', price: 210 },
+    ];
+    return buildReviewReportSpec({ reviewNumber: 'INV-1', supplierId: null, supplierName: 'مورد', createdAt: '2026-08-26' }, items, units, []);
+  });
+  const bulkCol = spec.columns.find(c => c.key === 'price');
+  check('the bulk column is named after the unit in use', bulkCol.label === 'سعر الدستة', bulkCol.label);
+  check('a piece line dashes the bulk price, never the piece price',
+        spec.rows[1].price === '—' && spec.rows[1].piecePrice === '210.00', JSON.stringify(spec.rows[1]));
+  check('a dozen line carries both prices',
+        spec.rows[0].price === '930.00' && spec.rows[0].piecePrice === '77.50', JSON.stringify(spec.rows[0]));
+  check('the barcode column is in the report by default',
+        spec.columns.some(c => c.key === 'barcode') && spec.rows[0].barcode === '111');
 
   // ---------- dashboard numbers agree with the screens they name ----------
   await goto('/dashboard');

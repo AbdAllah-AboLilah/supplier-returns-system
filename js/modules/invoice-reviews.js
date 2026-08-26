@@ -41,6 +41,25 @@ async function generateReviewNumber() {
   return `INV-${year}-${String(seq).padStart(5, '0')}`;
 }
 
+// Arabic definite article, without doubling it if a unit is already named
+// with one ("كرتونة" -> "الكرتونة", "الكرتونة" -> "الكرتونة").
+function withAl(label) {
+  const text = String(label || '').trim();
+  return text.startsWith('ال') ? text : `ال${text}`;
+}
+
+// The column beside "سعر القطعة" holds the price of the bulk unit, so it
+// is named after whichever bulk unit this invoice actually uses — "سعر
+// الدستة" when everything is by the dozen. Only when one invoice mixes
+// two different bulk units does it fall back to the generic wording.
+function bulkPriceLabel(items, units) {
+  const labels = [...new Set(items
+    .map(i => computeLine(i, units))
+    .filter(c => c.multiplier !== 1)
+    .map(c => c.unit.label))];
+  return labels.length === 1 ? `سعر ${withAl(labels[0])}` : 'سعر الوحدة';
+}
+
 function computeLine(item, units) {
   const unit = units.find(u => u.key === item.unitKey) || units[0] || DEFAULT_UNITS[0];
   const multiplier = Number(unit?.multiplier) || 1;
@@ -395,7 +414,7 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
       <div class="card-header"><h3>أصناف الفاتورة</h3><span class="small text-dim">${fmtInt(items.length)} صنف · حفظ تلقائي أثناء الكتابة</span></div>
       ${items.length ? `
       <table class="data-table">
-        <thead><tr><th>الصنف</th><th class="num">الكمية</th><th>الوحدة</th><th class="num">سعر الوحدة</th><th class="num">سعر القطعة</th><th class="num">الكمية الفعلية</th><th class="num">الإجمالي</th><th></th></tr></thead>
+        <thead><tr><th>الصنف</th><th class="num">الكمية</th><th>الوحدة</th><th class="num">${escapeHtml(bulkPriceLabel(items, units))}</th><th class="num">سعر القطعة</th><th class="num">الكمية الفعلية</th><th class="num">الإجمالي</th><th></th></tr></thead>
         <tbody>
           ${items.map(i => {
             const c = computeLine(i, units);
@@ -408,8 +427,8 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
                   ${units.map(u => `<option value="${u.key}" ${i.unitKey === u.key ? 'selected' : ''}>${escapeHtml(u.label)}</option>`).join('')}
                 </select>
               </td>
-              <td class="num" data-label="سعر الوحدة"><input type="number" min="0" step="0.01" class="ln-price" data-id="${i.id}" value="${i.price}" style="width:90px;text-align:center;"></td>
-              <td class="num" id="ln-piece-${i.id}" data-label="سعر القطعة">${c.multiplier === 1 ? '<span class="text-dim">—</span>' : `<b>${fmtMoney(c.piecePrice)}</b>`}</td>
+              <td class="num" data-label="${escapeHtml(bulkPriceLabel(items, units))}"><input type="number" min="0" step="0.01" class="ln-price" data-id="${i.id}" value="${i.price}" style="width:90px;text-align:center;"></td>
+              <td class="num" id="ln-piece-${i.id}" data-label="سعر القطعة"><b>${fmtMoney(c.piecePrice)}</b></td>
               <td class="num text-dim" id="ln-actual-${i.id}" data-label="الكمية الفعلية">${fmtInt(c.actualQty)} قطعة</td>
               <td class="num text-mono" id="ln-total-${i.id}" data-label="الإجمالي">${fmtMoney(c.total)}</td>
               <td><button class="btn btn-sm btn-ghost ln-remove" data-id="${i.id}">حذف</button></td>
@@ -448,9 +467,9 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
     <div class="card card-pad">
       <div class="section-title">تصدير</div>
       <label class="export-col-toggle">
-        <input type="checkbox" id="exp-barcode"> إضافة عمود الباركود
+        <input type="checkbox" id="exp-barcode" checked> إضافة عمود الباركود
       </label>
-      <div class="hint">مقفول افتراضيًا — علّم عليه لما تحتاج الباركود في النسخة اللي هتطلعها.</div>
+      <div class="hint">شيل العلامة لو مش عايز الباركود في النسخة اللي هتطلعها.</div>
       <div class="flex gap-8" style="flex-wrap:wrap;margin-top:12px;">
         <button class="btn btn-ghost" id="btn-copy">📋 نسخ كنص</button>
         <button class="btn btn-ghost" id="btn-img">🖼 تنزيل كصورة</button>
@@ -613,7 +632,7 @@ function wireDetailEvents(container, review, items, units, suppliers) {
     qs('#add-item-name', container)?.focus();
   }));
 
-  const withBarcode = () => ({ showBarcode: !!qs('#exp-barcode', container)?.checked });
+  const withBarcode = () => ({ showBarcode: qs('#exp-barcode', container)?.checked !== false });
   qs('#btn-copy', container).addEventListener('click', () => copyReviewText(review, items, units, suppliers, withBarcode()));
   qs('#btn-img', container).addEventListener('click', () => downloadReviewImage(review, items, units, suppliers, withBarcode()));
   qs('#btn-whatsapp', container).addEventListener('click', () => shareReviewImage(review, items, units, suppliers, withBarcode()));
@@ -631,7 +650,7 @@ function recalcLine(container, lineId, units) {
   const actualQty = qty * multiplier;
   const total = qty * price;
   const pieceCell = qs(`#ln-piece-${lineId}`, container);
-  if (pieceCell) pieceCell.innerHTML = multiplier === 1 ? '<span class="text-dim">—</span>' : `<b>${fmtMoney(price / multiplier)}</b>`;
+  if (pieceCell) pieceCell.innerHTML = `<b>${fmtMoney(price / multiplier)}</b>`;
   const actualCell = qs(`#ln-actual-${lineId}`, container);
   // Keep the unit word — the initial render has it, so without it the
   // cell silently lost "قطعة" the moment you edited the row.
@@ -726,8 +745,10 @@ function reviewSummaryText(review, items, units, suppliers, { showBarcode = fals
     const c = computeLine(i, units);
     const namePart = i.itemName ? `${i.itemName} — ` : '';
     const barcodePart = showBarcode ? `باركود: ${i.erpBarcode || '—'} | ` : '';
-    const piecePart = c.multiplier === 1 ? '' : `سعر القطعة: ${fmtMoney(c.piecePrice)} | `;
-    lines.push(`${idx + 1}. ${namePart}${barcodePart}الكمية: ${fmtInt(c.qty)} ${c.unit.label} | الكمية الفعلية: ${fmtInt(c.actualQty)} قطعة | سعر ${c.unit.label}: ${fmtMoney(c.price)} | ${piecePart}الإجمالي: ${fmtMoney(c.total)}`);
+    // The bulk price only exists for a line entered in a bulk unit; the
+    // piece price is always there, because that is the number being checked.
+    const bulkPart = c.multiplier === 1 ? '' : `سعر ${withAl(c.unit.label)}: ${fmtMoney(c.price)} | `;
+    lines.push(`${idx + 1}. ${namePart}${barcodePart}الكمية: ${fmtInt(c.qty)} ${c.unit.label} | الكمية الفعلية: ${fmtInt(c.actualQty)} قطعة | ${bulkPart}سعر القطعة: ${fmtMoney(c.piecePrice)} | الإجمالي: ${fmtMoney(c.total)}`);
   });
   const totalQty = items.reduce((s, i) => s + computeLine(i, units).actualQty, 0);
   const totalValue = items.reduce((s, i) => s + computeLine(i, units).total, 0);
@@ -745,12 +766,14 @@ async function copyReviewText(review, items, units, suppliers, options) {
   }
 }
 
-async function renderReviewToBlob(review, items, units, suppliers, { showBarcode = false } = {}) {
+// The report's shape, separated from drawing it: what the columns are and
+// what each row holds. Exported so it can be asserted on directly.
+export function buildReviewReportSpec(review, items, units, suppliers, { showBarcode = true } = {}) {
   const supplierName = review.supplierId ? (suppliers.find(s => s.id === review.supplierId)?.name || review.supplierName) : (review.supplierName || '—');
   const totalQty = items.reduce((s, i) => s + computeLine(i, units).actualQty, 0);
   const totalValue = items.reduce((s, i) => s + computeLine(i, units).total, 0);
 
-  const canvas = await drawReport({
+  return {
     width: showBarcode ? 860 : 760, // room for the extra columns
     title: `مراجعة فاتورة ${review.reviewNumber}`,
     subtitle: `${supplierName}${review.invoiceNumber ? ` · فاتورة رقم ${review.invoiceNumber}` : ''}`,
@@ -761,7 +784,7 @@ async function renderReviewToBlob(review, items, units, suppliers, { showBarcode
       { key: 'qty', label: 'الكمية' },
       { key: 'unit', label: 'الوحدة' },
       { key: 'actualQty', label: 'الكمية الفعلية' },
-      { key: 'price', label: 'سعر الوحدة' },
+      { key: 'price', label: bulkPriceLabel(items, units) },
       { key: 'piecePrice', label: 'سعر القطعة' },
       { key: 'total', label: 'الإجمالي' },
     ],
@@ -773,14 +796,21 @@ async function renderReviewToBlob(review, items, units, suppliers, { showBarcode
         qty: fmtInt(c.qty),
         unit: c.unit.label,
         actualQty: `${fmtInt(c.actualQty)} قطعة`,
-        price: fmtMoney(c.price),
-        piecePrice: c.multiplier === 1 ? '—' : fmtMoney(c.piecePrice),
+        // A line entered by the piece has no bulk price — the dash goes
+        // here, not on the piece price, which is always meaningful and is
+        // the number being checked against ERP.
+        price: c.multiplier === 1 ? '—' : fmtMoney(c.price),
+        piecePrice: fmtMoney(c.piecePrice),
         total: fmtMoney(c.total),
       };
     }),
     footerRight: `إجمالي الكمية: ${fmtInt(totalQty)} قطعة`,
     footerLeft: `الإجمالي: ${fmtMoney(totalValue)} جنيه`,
-  });
+  };
+}
+
+async function renderReviewToBlob(review, items, units, suppliers, options) {
+  const canvas = await drawReport(buildReviewReportSpec(review, items, units, suppliers, options));
   return canvasToBlob(canvas);
 }
 

@@ -16,13 +16,10 @@ import { fmtMoney, fmtInt, fmtDate, escapeHtml, openModal, toast, qs, qsa, print
 import { getSetting, getAll } from '../core/db.js';
 import { drawReport, canvasToBlob } from './report-canvas.js';
 
-// `defaultOff` columns start unticked: the barcode is for matching
-// against ERP internally, not something every report handed to a
-// supplier or a driver should carry, so it is opted into per export.
 const COLUMNS = [
   { key: 'supplierName', label: 'اسم الصنف عند المورد' },
   { key: 'erpName', label: 'صنف النظام ERP' },
-  { key: 'barcode', label: 'الباركود', defaultOff: true },
+  { key: 'barcode', label: 'الباركود' },
   { key: 'qty', label: 'الكمية' },
   { key: 'cost', label: 'تكلفة المورد' },
   { key: 'total', label: 'الإجمالي' },
@@ -65,7 +62,7 @@ export async function openExportOptionsModal(ret, rawLines, supplier) {
             </label>
           `).join('')}
         </div>
-        <div class="hint">أخفِ أي عمود (مثل التكلفة) قبل تصدير نسخة تُشارك مع طرف خارجي. الباركود مقفول افتراضيًا — علّم عليه لما تحتاجه.</div>
+        <div class="hint">أخفِ أي عمود (مثل التكلفة) قبل تصدير نسخة تُشارك مع طرف خارجي.</div>
       </div>
       <div class="export-actions">
         <button class="btn btn-primary" id="btn-exp-excel">⬇ تصدير Excel</button>
