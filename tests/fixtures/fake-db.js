@@ -187,6 +187,24 @@ for (let i = 1; i <= 30; i++) {
     qty: 2, unitKey: 'dozen', price: 50, createdAt: iso('2026-08-01'),
   });
 }
+// A supplier item of its own, added after the returns seed so no return
+// line points at it: the unit/price tests move its cost around and must
+// not disturb what the other suites assert.
+store('supplierItems').set('siunit', {
+  id: 'siunit', supplierId: 's2', supplierItemName: 'صنف اختبار الوحدة',
+  erpItemId: 'e22', currentCost: 38,
+  createdAt: iso('2026-01-01'), updatedAt: iso('2026-01-01'),
+});
+store('invoiceReviews').set('ivunit', {
+  id: 'ivunit', reviewNumber: 'INV-2026-00032', supplierId: 's2', supplierName: 'مورد النور',
+  invoiceNumber: 'F32', erpEntered: false, erpEnteredAt: null, photo: null,
+  createdAt: iso('2026-08-02'), updatedAt: iso('2026-08-02'),
+});
+store('invoiceReviewItems').set('ivunit-1', {
+  id: 'ivunit-1', reviewId: 'ivunit', itemName: 'صنف اختبار الوحدة', erpItemId: 'e22',
+  supplierItemId: 'siunit', qty: 2, unitKey: 'piece', price: 38, createdAt: iso('2026-08-02'),
+});
+
 // A review as it exists the moment it is created: no supplier yet. This is
 // the state in which the item field is drawn disabled, so it is the one
 // that proves the field comes alive once a supplier is picked.

@@ -215,6 +215,10 @@ export async function updateReviewItem(lineId, patch) {
   if (!line) throw new Error(MISSING_LINE);
   Object.assign(line, patch);
   await put('invoiceReviewItems', line);
+  // Editing a line is editing the review, and the exported report is dated
+  // by that — without this it kept whatever date the last meta change left.
+  const parentOfLine = await getById('invoiceReviews', line.reviewId);
+  if (parentOfLine) await touch(parentOfLine);
   return line;
 }
 
@@ -433,7 +437,7 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
       <div class="card-header"><h3>أصناف الفاتورة</h3><span class="small text-dim">${fmtInt(items.length)} صنف · حفظ تلقائي أثناء الكتابة</span></div>
       ${items.length ? `
       <table class="data-table">
-        <thead><tr><th>الصنف</th><th class="num">الكمية</th><th>الوحدة</th><th class="num">${escapeHtml(bulkPriceLabel(items, units))}</th><th class="num">سعر القطعة</th><th class="num">الكمية الفعلية</th><th class="num">الإجمالي</th><th></th></tr></thead>
+        <thead><tr><th>الصنف</th><th class="num">الكمية</th><th>الوحدة</th><th class="num" id="bulk-price-head">${escapeHtml(bulkPriceLabel(items, units))}</th><th class="num">سعر القطعة</th><th class="num">الكمية الفعلية</th><th class="num">الإجمالي</th><th></th></tr></thead>
         <tbody>
           ${items.map(i => {
             const c = computeLine(i, units);
@@ -442,11 +446,11 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
               <td data-label="الصنف">${i.itemName ? `<b>${escapeHtml(i.itemName)}</b>` : '<span class="text-dim">—</span>'}${i.itemName ? (i.erpItemId ? '' : ' <span class="badge badge-warn">⚠️ غير مرتبط</span>') : ''}</td>
               <td class="num" data-label="الكمية"><input type="number" min="0" step="any" class="ln-qty" data-id="${i.id}" value="${i.qty}" style="width:80px;text-align:center;"></td>
               <td data-label="الوحدة">
-                <select class="ln-unit" data-id="${i.id}">
+                <select class="ln-unit" data-id="${i.id}" data-prev-unit="${escapeHtml(i.unitKey || '')}">
                   ${units.map(u => `<option value="${u.key}" ${i.unitKey === u.key ? 'selected' : ''}>${escapeHtml(u.label)}</option>`).join('')}
                 </select>
               </td>
-              <td class="num" data-label="${escapeHtml(bulkPriceLabel(items, units))}"><input type="number" min="0" step="0.01" class="ln-price" data-id="${i.id}" value="${i.price}" style="width:90px;text-align:center;"></td>
+              <td class="num" data-bulk-price data-label="${escapeHtml(bulkPriceLabel(items, units))}"><input type="number" min="0" step="0.01" class="ln-price" data-id="${i.id}" value="${i.price}" style="width:90px;text-align:center;"></td>
               <td class="num" id="ln-piece-${i.id}" data-label="سعر القطعة"><b>${fmtMoney(c.piecePrice)}</b></td>
               <td class="num text-dim" id="ln-actual-${i.id}" data-label="الكمية الفعلية">${fmtInt(c.actualQty)} قطعة</td>
               <td class="num text-mono" id="ln-total-${i.id}" data-label="الإجمالي">${fmtMoney(c.total)}</td>
@@ -618,15 +622,36 @@ function wireDetailEvents(container, review, items, units, suppliers) {
     recalcLine(container, inp.dataset.id, units);
   }, { delay: 500 })));
   qsa('.ln-price', container).forEach(inp => savers.push(autosaveField(inp, async (val) => {
-    const line = await updateReviewItem(inp.dataset.id, { price: Number(val) || 0 });
+    await updateReviewItem(inp.dataset.id, { price: Number(val) || 0 });
     recalcLine(container, inp.dataset.id, units);
-    await syncSupplierCostFromLine(line, units);
   }, { delay: 500 })));
+  // Saving the line is one thing; pushing that price out as the supplier's
+  // cost is another — it rewrites a price shared by every row under the
+  // same name and files a history entry for each. So it waits for the
+  // field to be finished with rather than riding the half-second debounce:
+  // pausing in the middle of "1150" used to file 11 as the cost.
+  qsa('.ln-price', container).forEach(inp => inp.addEventListener('change', guarded(async () => {
+    const line = await updateReviewItem(inp.dataset.id, { price: Number(inp.value) || 0 });
+    await syncSupplierCostFromLine(line, units);
+  })));
   qsa('.ln-unit', container).forEach(sel => sel.addEventListener('change', guarded(async () => {
-    // The unit changes what the same number means per piece, so the
-    // supplier cost follows it too.
-    const line = await updateReviewItem(sel.dataset.id, { unitKey: sel.value });
+    // Same rule as the add row: the price is per whichever unit is shown,
+    // so switching the unit re-expresses it. Leaving the number alone made
+    // the same money mean a twelfth as much per piece, and that wrong
+    // figure was pushed straight out as the supplier's cost.
+    const patch = { unitKey: sel.value };
+    const priceInput = sel.closest('tr')?.querySelector('.ln-price');
+    const from = Number(unitByKey(units, sel.dataset.prevUnit)?.multiplier) || 1;
+    const to = Number(unitByKey(units, sel.value)?.multiplier) || 1;
+    const shown = Number(priceInput?.value) || 0;
+    if (priceInput && from !== to && shown > 0) {
+      patch.price = Number(((shown / from) * to).toFixed(4));
+      priceInput.value = patch.price;
+    }
+    sel.dataset.prevUnit = sel.value;
+    const line = await updateReviewItem(sel.dataset.id, patch);
     recalcLine(container, sel.dataset.id, units);
+    refreshBulkPriceHeader(container, units);
     await syncSupplierCostFromLine(line, units);
   })));
   // Deleting a line used to happen on a single tap, with no way back —
@@ -733,6 +758,7 @@ function wireDetailEvents(container, review, items, units, suppliers) {
     const qty = qs('#add-qty', container).value;
     const unitKey = qs('#add-unit', container).value;
     const price = qs('#add-price', container).value;
+    if (!itemName) { toast('اكتب اسم الصنف أولًا', 'error'); return; }
     if (!qty || Number(qty) <= 0) { toast('اكتب الكمية أولًا', 'error'); return; }
 
     // Resolve the name against the supplier's items — creating it there if
@@ -774,6 +800,17 @@ function wireDetailEvents(container, review, items, units, suppliers) {
   qs('#btn-img', container).addEventListener('click', guarded(() => exportWith((rev, rows, opts) => downloadReviewImage(rev, rows, units, suppliers, opts))));
   qs('#btn-whatsapp', container).addEventListener('click', guarded(() => exportWith((rev, rows, opts) => shareReviewImage(rev, rows, units, suppliers, opts))));
   qs('#btn-print', container).addEventListener('click', guarded(() => exportWith((rev, rows, opts) => printReview(rev, rows, units, suppliers, opts))));
+}
+
+// The bulk price column is named after the unit the invoice actually uses,
+// so switching a row's unit can change that name. Without this it kept
+// saying "سعر الدستة" over a column that had stopped being dozen prices.
+function refreshBulkPriceHeader(container, units) {
+  const rows = qsa('tr[data-line]', container).map(tr => ({ unitKey: tr.querySelector('.ln-unit')?.value }));
+  const label = bulkPriceLabel(rows, units);
+  const head = qs('#bulk-price-head', container);
+  if (head) head.textContent = label;
+  qsa('td[data-bulk-price]', container).forEach(td => { td.dataset.label = label; });
 }
 
 function recalcLine(container, lineId, units) {
@@ -848,12 +885,20 @@ function openUnitsManagerModal(onDone) {
       wireDelButtons();
     }
     function wireDelButtons() {
-      node.querySelectorAll('.btn-del-unit').forEach(b => b.addEventListener('click', async () => {
+      node.querySelectorAll('.btn-del-unit').forEach(b => b.addEventListener('click', guarded(async () => {
         const current = await getUnits();
         if (current.length <= 1) { toast('لازم تفضل وحدة واحدة على الأقل', 'error'); return; }
+        // A line keeps only its unit's key, and an unknown key falls back
+        // to the first unit — so deleting a unit in use would silently
+        // turn "2 دستة" into "2 قطعة" and change that invoice's total.
+        const inUse = (await getAll('invoiceReviewItems')).filter(i => i.unitKey === b.dataset.key).length;
+        if (inUse) {
+          toast(`الوحدة دي مستخدمة في ${fmtInt(inUse)} سطر — غيّر وحدتهم الأول`, 'error');
+          return;
+        }
         await saveUnits(current.filter(u => u.key !== b.dataset.key));
         refresh();
-      }));
+      })));
     }
     wireDelButtons();
 
@@ -873,10 +918,22 @@ function openUnitsManagerModal(onDone) {
 
 // ---------- Export: copy / image / WhatsApp / print ----------
 
+// The same rule the return report follows: a review still being checked
+// carries the date it last changed, and once it has been entered on ERP
+// that is the date that means something — "آخر تعديل" on a finished
+// review only ever refers to something internal.
+function reviewReportDate(review) {
+  return review.erpEntered && review.erpEnteredAt
+    ? { label: 'تاريخ الإدخال على ERP', value: fmtDate(review.erpEnteredAt, true) }
+    : { label: 'آخر تعديل', value: fmtDate(review.updatedAt || review.createdAt, true) };
+}
+
 function reviewSummaryText(review, items, units, suppliers, { showBarcode = false } = {}) {
   const supplierName = review.supplierId ? (suppliers.find(s => s.id === review.supplierId)?.name || review.supplierName) : (review.supplierName || '—');
   const lines = [`مراجعة فاتورة ${review.reviewNumber}`, `المورد: ${supplierName}`];
   if (review.invoiceNumber) lines.push(`رقم الفاتورة: ${review.invoiceNumber}`);
+  const date = reviewReportDate(review);
+  lines.push(`${date.label}: ${date.value}`);
   lines.push('');
   items.forEach((i, idx) => {
     const c = computeLine(i, units);
@@ -914,7 +971,7 @@ export function buildReviewReportSpec(review, items, units, suppliers, { showBar
     width: showBarcode ? 860 : 760, // room for the extra columns
     title: `مراجعة فاتورة ${review.reviewNumber}`,
     subtitle: `${supplierName}${review.invoiceNumber ? ` · فاتورة رقم ${review.invoiceNumber}` : ''}`,
-    dateLabel: fmtDate(review.createdAt),
+    dateLabel: `${reviewReportDate(review).label}: ${reviewReportDate(review).value}`,
     columns: [
       { key: 'itemName', label: 'الصنف', flex: true, strong: true },
       ...(showBarcode ? [{ key: 'barcode', label: 'الباركود' }] : []),

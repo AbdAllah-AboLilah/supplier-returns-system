@@ -305,7 +305,10 @@ try {
         JSON.stringify(priced));
   check('invoice export offers a barcode column, ticked by default', priced.barcodeBox === true);
 
-  // Switching the unit to pieces makes the typed price the piece price.
+  // Switching the unit re-expresses the price rather than reinterpreting
+  // it, so what the line costs per piece does not move: 50 a dozen shown
+  // as pieces is 4.1667 each, still 4.17 in the piece column. The quantity
+  // follows the new unit — 2 pieces, not 2 dozen.
   await page.selectOption('.ln-unit', 'piece');
   await page.waitForTimeout(800);
   const asPieces = await page.evaluate(() => ({
@@ -313,8 +316,8 @@ try {
     actual: document.querySelector('[id^="ln-actual-"]')?.textContent.trim(),
     unitPrice: document.querySelector('.ln-price')?.value,
   }));
-  check('switching to pieces makes the typed price the piece price',
-        asPieces.piece === '50.00' && asPieces.unitPrice === '50' && asPieces.actual === '2 قطعة',
+  check('switching a line to pieces keeps what it costs per piece',
+        asPieces.piece === '4.17' && asPieces.unitPrice === '4.1667' && asPieces.actual === '2 قطعة',
         JSON.stringify(asPieces));
 
   // ---------- which price column carries the dash ----------
@@ -636,6 +639,7 @@ try {
     window.location.hash = '#/invoice-reviews/iv7';
     await wait(900);
     const invBefore = document.querySelectorAll('tr[data-line]').length;
+    document.querySelector('#add-item-name').value = 'صنف الضغط المزدوج على الفاتورة';
     document.querySelector('#add-qty').value = '3';
     document.querySelector('#add-price').value = '10';
     const invBtn = document.querySelector('#btn-add-line');
@@ -880,6 +884,98 @@ try {
   check('a return line asks too, and survives a no',
         retAsked.includes('هيتشال') && retAfterCancel === retLinesBefore,
         `${retAsked.slice(0, 40)} | ${retLinesBefore} -> ${retAfterCancel}`);
+
+  // ---------- a line's own unit and price, on the table rows ----------
+  await goto('/invoice-reviews/ivunit');
+  await page.waitForTimeout(900);
+  const costOf = () => page.evaluate(async () => {
+    const db = await import('/js/core/db.js');
+    return (await db.getById('supplierItems', 'siunit')).currentCost;
+  });
+
+  // A price is saved as you type, but pushing it out as the supplier's
+  // cost waits for the field to be done with — a pause halfway through a
+  // number used to file the half of it that had been typed.
+  await page.locator('.ln-price').first().fill('');
+  await page.click('.ln-price');
+  await page.keyboard.type('11', { delay: 60 });
+  await page.waitForTimeout(1000); // well past the 500ms autosave debounce
+  const midTyping = await costOf();
+  const savedPrice = await page.$eval('.ln-price', el => el.value);
+  check('a half-typed price is saved without reaching the supplier cost',
+        midTyping === 38 && savedPrice === '11', `cost=${midTyping} price=${savedPrice}`);
+
+  await page.keyboard.press('Tab');
+  await page.waitForTimeout(900);
+  const afterBlur = await costOf();
+  check('and reaches it once the field is finished with', afterBlur === 11, `cost=${afterBlur}`);
+
+  // Switching a row's unit re-expresses its price, so the cost it stands
+  // for does not move. It used to keep the number and push a twelfth of
+  // the real cost out to the supplier.
+  const headBefore = await page.$eval('#bulk-price-head', el => el.textContent.trim());
+  await page.selectOption('.ln-unit', 'dozen');
+  await page.waitForTimeout(900);
+  const afterUnit = await page.evaluate(() => ({
+    price: document.querySelector('.ln-price').value,
+    piece: document.querySelector('[id^="ln-piece-"]').textContent.trim(),
+    head: document.querySelector('#bulk-price-head').textContent.trim(),
+  }));
+  const costAfterUnit = await costOf();
+  check('switching a line to dozen re-expresses its price',
+        Number(afterUnit.price) === 132 && costAfterUnit === 11,
+        `${JSON.stringify(afterUnit)} cost=${costAfterUnit}`);
+  check('and the bulk price column is renamed after the unit in use',
+        headBefore === 'سعر الوحدة' && afterUnit.head === 'سعر الدستة',
+        `${headBefore} -> ${afterUnit.head}`);
+
+  // A unit a line is filed under cannot be deleted out from under it: an
+  // unknown unit key falls back to the first unit, which would silently
+  // turn "2 دستة" into "2 قطعة" and change that invoice's total.
+  await page.click('#btn-manage-units');
+  await page.waitForSelector('#units-table', { timeout: 10000 });
+  const unitRowsBefore = await page.$$eval('#units-table tbody tr', els => els.length);
+  await page.locator('#units-table tbody tr[data-key="dozen"] .btn-del-unit').click();
+  await page.waitForTimeout(700);
+  const unitGuard = await page.evaluate(() => ({
+    rows: document.querySelectorAll('#units-table tbody tr').length,
+    toast: document.querySelector('.toast')?.textContent.trim() || '',
+  }));
+  check('a unit that invoice lines are using cannot be deleted',
+        unitGuard.rows === unitRowsBefore && unitGuard.toast.includes('مستخدمة'),
+        `${unitRowsBefore} -> ${unitGuard.rows} | ${unitGuard.toast}`);
+  await page.click('.modal-footer .btn-primary');
+  await page.waitForTimeout(700);
+
+  // The exported report is dated by what happened last, the same rule the
+  // return report follows — it used to always carry the creation date.
+  const reviewDates = await page.evaluate(async () => {
+    const { buildReviewReportSpec } = await import('/js/modules/invoice-reviews.js');
+    const units = [{ key: 'piece', label: 'قطعة', multiplier: 1 }];
+    const base = {
+      reviewNumber: 'INV-2026-09999', supplierId: null, supplierName: 'مورد',
+      createdAt: '2026-01-01T08:00:00.000Z', updatedAt: '2026-08-05T08:00:00.000Z',
+    };
+    return {
+      edited: buildReviewReportSpec({ ...base }, [], units, []).dateLabel,
+      editedLater: buildReviewReportSpec({ ...base, updatedAt: '2026-03-03T08:00:00.000Z' }, [], units, []).dateLabel,
+      onErp: buildReviewReportSpec({ ...base, erpEntered: true, erpEnteredAt: '2026-08-09T08:00:00.000Z' }, [], units, []).dateLabel,
+    };
+  });
+  check('the review report is dated by what happened last',
+        reviewDates.edited.startsWith('آخر تعديل')
+        && reviewDates.edited !== reviewDates.editedLater
+        && reviewDates.onErp.startsWith('تاريخ الإدخال على ERP'),
+        JSON.stringify(reviewDates));
+
+  // A line with no name exports as a dash and is not a supplier item.
+  const rowsBeforeAdd = await page.$$eval('tr[data-line]', els => els.length);
+  await page.fill('#add-qty', '3');
+  await page.click('#btn-add-line');
+  await page.waitForTimeout(900);
+  const rowsAfterAdd = await page.$$eval('tr[data-line]', els => els.length);
+  check('adding without an item name is refused', rowsAfterAdd === rowsBeforeAdd,
+        `${rowsBeforeAdd} -> ${rowsAfterAdd}`);
 
   // ---------- adding a second ERP link under one supplier name ----------
   await goto('/suppliers/s2');
