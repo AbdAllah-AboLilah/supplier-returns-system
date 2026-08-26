@@ -2,7 +2,7 @@
 
 ## 1.17.16 — 2026-08-26
 
-- Merge pull request #2 from AbdAllah-AboLilah/claude/system-overview-rrte8n
+- تنظيم داخلي لطريقة رفع التحديثات — مفيش تغيير في التطبيق نفسه.
 
 ## 1.17.15 — 2026-08-26
 

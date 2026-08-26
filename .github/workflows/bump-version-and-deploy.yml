@@ -64,15 +64,34 @@ jobs:
       # CHANGELOG.md is written for the person running the shop, in Arabic.
       # A commit can supply its entry with a line starting "سجل:"; without
       # one the English commit subject is used, which is better than
-      # nothing but worth avoiding for anything user-visible.
+      # nothing but worth avoiding for anything user-visible. The lines are
+      # collected from every commit the push brought in, so it does not
+      # matter whether the pull request was squashed or merged.
       - name: Bump patch version
         id: bump
         run: |
-          NOTE=$(git log -1 --pretty=%B | grep -m1 '^سجل:' | sed 's/^سجل:[[:space:]]*//' || true)
-          if [ -z "$NOTE" ]; then
-            NOTE=$(git log -1 --pretty=%s | sed 's/\[skip ci\]//g' | xargs)
+          # Where the notes are depends on how the change reached main. A
+          # squash or a direct push leaves them in HEAD; a merge commit's
+          # own message has none — they are in the commits it brought in,
+          # which is HEAD^1..HEAD, and HEAD^2 exists only for a merge.
+          # Getting this wrong writes "Merge pull request #N" into a
+          # changelog the shop owner reads, which is what happened in
+          # 1.17.16.
+          if git rev-parse -q --verify HEAD^2 >/dev/null; then
+            RANGE="HEAD^1..HEAD"
+            SUBJECT=$(git log -1 --pretty=%s HEAD^2)
+          else
+            RANGE="HEAD~1..HEAD"
+            SUBJECT=$(git log -1 --pretty=%s HEAD)
           fi
-          echo "version=$(node scripts/bump-version.js patch "$NOTE")" >> "$GITHUB_OUTPUT"
+          # One bullet per note, oldest first, duplicates dropped — several
+          # commits in one pull request each get their own line.
+          mapfile -t NOTES < <(git log --reverse --pretty=%B "$RANGE" \
+            | sed -n 's/^سجل:[[:space:]]*//p' | awk 'NF && !seen[$0]++')
+          if [ ${#NOTES[@]} -eq 0 ]; then
+            NOTES=("$(echo "$SUBJECT" | sed 's/\[skip ci\]//g' | xargs)")
+          fi
+          echo "version=$(node scripts/bump-version.js patch "${NOTES[@]}")" >> "$GITHUB_OUTPUT"
 
       - name: Commit the bump
         run: |
