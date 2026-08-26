@@ -376,6 +376,34 @@ try {
   });
   check('an unchanged dashboard is not re-rendered', stable);
 
+  // ---------- invoice review: picking a photo, and the quantity default ----------
+  await goto('/invoice-reviews/iv3');
+  await page.waitForTimeout(700);
+  const inputs = await page.evaluate(() => {
+    const photo = document.querySelector('#photo-input');
+    const qty = document.querySelector('#add-qty');
+    return {
+      // capture="environment" would send a phone straight to the camera
+      // and hide the gallery, so an existing photo could not be picked.
+      forcesCamera: photo ? photo.hasAttribute('capture') : null,
+      acceptsImages: photo ? photo.getAttribute('accept') : null,
+      qtyValue: qty ? qty.value : null,
+      qtyPlaceholder: qty ? qty.getAttribute('placeholder') : null,
+    };
+  });
+  check('an invoice photo can come from the device, not just the camera',
+        inputs.forcesCamera === false && inputs.acceptsImages === 'image/*', JSON.stringify(inputs));
+  check('the quantity starts empty rather than at 1',
+        inputs.qtyValue === '' && inputs.qtyPlaceholder === '0', JSON.stringify(inputs));
+
+  // An empty quantity must be refused rather than saved as a zero line.
+  const linesBeforeBlankAdd = await page.$$eval('tr[data-line]', rs => rs.length);
+  await page.click('#btn-add-line');
+  await page.waitForTimeout(600);
+  const linesAfterBlankAdd = await page.$$eval('tr[data-line]', rs => rs.length);
+  check('adding without a quantity is refused',
+        linesAfterBlankAdd === linesBeforeBlankAdd, `${linesBeforeBlankAdd} -> ${linesAfterBlankAdd}`);
+
   check('no console or page errors', pageErrors.length === 0, pageErrors.slice(0, 3).join(' | '));
 } catch (err) {
   check('suite ran to completion', false, err.message.split('\n')[0]);

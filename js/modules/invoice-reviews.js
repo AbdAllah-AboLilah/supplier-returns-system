@@ -376,7 +376,12 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
       <div class="field mt-8">
         <label>صورة الفاتورة</label>
         <div id="photo-area"></div>
-        <input type="file" id="photo-input" accept="image/*" capture="environment" style="display:none;">
+        <!-- No capture attribute: capture="environment" sends a phone
+             straight to the camera and hides the gallery and files
+             options, so an invoice photo already on the device could not
+             be picked. Without it the OS shows its normal picker, which
+             offers the camera too. -->
+        <input type="file" id="photo-input" accept="image/*" style="display:none;">
       </div>
 
       <div class="mt-16">
@@ -429,7 +434,7 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
             <input type="text" id="add-item-name" placeholder="ابدأ الكتابة للبحث في أصناف ERP..." autocomplete="off">
             <div class="autocomplete-list" id="add-item-erp-results" style="display:none;"></div>
           </div>
-          <div class="field" style="flex:0 0 90px;"><label>الكمية</label><input type="number" id="add-qty" min="0" step="any" value="1"></div>
+          <div class="field" style="flex:0 0 90px;"><label>الكمية</label><input type="number" id="add-qty" min="0" step="any" placeholder="0"></div>
           <div class="field" style="flex:0 0 120px;">
             <div class="field-label-row"><label style="margin:0;">الوحدة</label><a href="#" id="btn-manage-units" class="small">إدارة الوحدات</a></div>
             <select id="add-unit">${units.map(u => `<option value="${u.key}">${escapeHtml(u.label)}</option>`).join('')}</select>
