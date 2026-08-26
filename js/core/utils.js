@@ -112,6 +112,29 @@ export function guarded(fn, fallbackMessage = 'حصلت مشكلة، حاول ت
   };
 }
 
+// Wraps a submit handler so its button is disabled while it runs. Adding
+// a line means a cloud round trip, which is long enough to click through
+// twice — and a second click that gets in before the first finishes adds
+// the row a second time. The button is only restored on the way out if it
+// is still on the page: a successful add usually re-renders the screen,
+// and the button restored then would be a detached one.
+export function submitOnce(button, handler, { busyLabel = 'جارِ الحفظ...' } = {}) {
+  return async (...args) => {
+    if (!button || button.disabled) return;
+    const originalLabel = button.textContent;
+    button.disabled = true;
+    button.textContent = busyLabel;
+    try {
+      await handler(...args);
+    } catch (err) {
+      console.error(err);
+      toast((err && err.message) || 'حصلت مشكلة، حاول تاني', 'error');
+    } finally {
+      if (button.isConnected) { button.disabled = false; button.textContent = originalLabel; }
+    }
+  };
+}
+
 // Closes any open autocomplete dropdown when the click lands outside it.
 // Registered per screen render and returned as a disposer — the previous
 // version used { once: true }, which meant the very first click anywhere

@@ -11,7 +11,7 @@
 // =========================================================
 import { getAll, getById, getByIndex, put, remove, removeWhere } from '../core/db.js';
 import { uid, nowIso, fmtMoney, fmtInt, fmtDate, escapeHtml, fuzzyIncludes, normalizeArabic, debounce,
-         openModal, confirmDialog, toast, qs, closeOnOutsideClick, guarded } from '../core/utils.js';
+         openModal, confirmDialog, toast, qs, closeOnOutsideClick, guarded, submitOnce } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
 import { findErpItems } from './item-links.js';
 import { getUnits, multiplierOf } from '../core/units.js';
@@ -41,25 +41,48 @@ export async function searchSupplierItems(supplierId, query, limit = 8) {
   });
 }
 
-export async function getOrCreateSupplierItem(supplierId, name) {
-  const rows = await listBySupplier(supplierId);
-  // Plain trim+lowercase does nothing useful on Arabic text (no case to
-  // fold), so it only caught byte-for-byte identical names. Matching on
-  // the same normalization used for search (strips diacritics/tatweel,
-  // unifies alef/ya/ta-marbuta variants, collapses whitespace) is what
-  // actually recognizes "كريبسادة" and "كريب سادة" as the same item
-  // instead of silently creating a second row for it.
-  const target = normalizeArabic(name);
-  const existing = rows.find(r => normalizeArabic(r.supplierItemName) === target);
-  if (existing) return existing;
+async function createSupplierItem(supplierId, name, erpItemId = null) {
   const record = {
     id: uid(), supplierId, supplierItemName: name.trim(),
-    erpItemId: null, currentCost: 0,
+    erpItemId: erpItemId || null, currentCost: 0,
     createdAt: nowIso(), updatedAt: nowIso(),
   };
   await put('supplierItems', record);
   logAction('إضافة اسم صنف عند المورد', 'supplierItem', record.id, name).catch(err => console.error('audit log failed:', err));
   return record;
+}
+
+// What identifies a supplier's item is the pair (its name, the ERP item it
+// maps to) — not the name on its own. One supplier can call a single thing
+// by one name while the shop splits it across several ERP items, so the
+// same name legitimately appears more than once with different links.
+//
+// Without an explicit link the name is all there is to go on, so a single
+// match is reused and several matches are refused rather than guessed at:
+// picking the wrong one would quietly file a return against the wrong ERP
+// item. Name matching uses the same normalization as search (diacritics,
+// tatweel, alef/ya/ta-marbuta variants, whitespace), which is what
+// recognizes "كريبسادة" and "كريب سادة" as one name.
+export async function getOrCreateSupplierItem(supplierId, name, { erpItemId = null } = {}) {
+  const rows = await listBySupplier(supplierId);
+  const target = normalizeArabic(name);
+  const sameName = rows.filter(r => normalizeArabic(r.supplierItemName) === target);
+
+  if (erpItemId) {
+    const sameLink = sameName.find(r => (r.erpItemId || null) === erpItemId);
+    if (sameLink) return sameLink;
+    // A row of this name with no link yet is the one being completed,
+    // not a different item — the caller links it straight after.
+    const unlinked = sameName.find(r => !r.erpItemId);
+    if (unlinked) return unlinked;
+    return createSupplierItem(supplierId, name, erpItemId);
+  }
+
+  if (sameName.length > 1) {
+    throw new Error(`"${name.trim()}" متسجّل أكتر من مرة عند المورد ده بأصناف ERP مختلفة — اختاره من قائمة الاقتراحات عشان النظام يعرف تقصد أنهي واحد.`);
+  }
+  if (sameName.length === 1) return sameName[0];
+  return createSupplierItem(supplierId, name);
 }
 
 export async function linkErpItem(supplierItemId, erpItemId) {
@@ -272,14 +295,14 @@ function wireCostUnitField(node, units, { costId = 'f-cost', unitId = 'f-cost-un
 
 async function openAddMappingModal(supplierId, onDone) {
   const units = await getUnits();
-  const { node, onClose } = openModal({
+  const { node, onClose, close } = openModal({
     title: 'إضافة / تعديل صنف عند المورد',
     bodyHtml: `
       <div class="field autocomplete">
         <label>اسم الصنف كما يكتبه المورد *</label>
         <input type="text" id="f-name" placeholder="مثال: كريبسادة لوكس" autocomplete="off">
         <div class="autocomplete-list" id="name-results" style="display:none;"></div>
-        <div class="hint">هيظهرلك أصناف مشابهة موجودة بالفعل عشان تتفادى تكرارها.</div>
+        <div class="hint">هيظهرلك أصناف مشابهة موجودة بالفعل. اختار واحد منها عشان تعدّل عليه، أو سيب الاسم زي ما هو واربطه بصنف ERP تاني — وقتها هيتسجّل كصنف منفصل.</div>
       </div>
       <div class="field autocomplete">
         <label>ربط بصنف نظام ERP (اختياري)</label>
@@ -293,18 +316,7 @@ async function openAddMappingModal(supplierId, onDone) {
       { label: 'إلغاء', className: 'btn-ghost', onClick: (c) => c() },
       {
         label: 'حفظ', className: 'btn-primary',
-        onClick: guarded(async (c) => {
-          const name = qs('#f-name', node).value.trim();
-          if (!name) { toast('الاسم مطلوب', 'error'); return; }
-          const si = await getOrCreateSupplierItem(supplierId, name);
-          const erpItemId = qs('#f-erp-search', node).dataset.selectedId || '';
-          if (erpItemId) await linkErpItem(si.id, erpItemId);
-          const costVal = costField.pieceCost();
-          // Re-read after the possible link above — passing the pre-link
-          // `si` here would silently overwrite that link with the stale copy.
-          if (costVal !== '') await updateCost(si.id, costVal);
-          c(); onDone();
-        }),
+        onClick: (c) => saveMapping(c),
       },
     ],
   });
@@ -314,11 +326,32 @@ async function openAddMappingModal(supplierId, onDone) {
   // (pre-filling its current link/cost) instead of risking a near-duplicate.
   const nameInput = qs('#f-name', node);
   const nameResults = qs('#name-results', node);
+
+  async function saveMapping(close) {
+    const name = qs('#f-name', node).value.trim();
+    if (!name) { toast('الاسم مطلوب', 'error'); return; }
+    const erpItemId = qs('#f-erp-search', node).dataset.selectedId || '';
+    // Picking a suggestion means "edit this one" — including relinking it.
+    // Typing a name that merely happens to exist means the (name, ERP item)
+    // pair decides, so a different link becomes a separate item.
+    const pickedId = nameInput.dataset.existingId || '';
+    const si = pickedId
+      ? await getById('supplierItems', pickedId)
+      : await getOrCreateSupplierItem(supplierId, name, { erpItemId });
+    if (!si) { toast('الصنف ده مش موجود — يمكن يكون اتحذف من جهاز تاني.', 'error'); return; }
+    if (erpItemId && (si.erpItemId || null) !== erpItemId) await linkErpItem(si.id, erpItemId);
+    const costVal = costField.pieceCost();
+    // Re-read inside updateCost after the possible link above — passing the
+    // pre-link `si` would silently overwrite that link with the stale copy.
+    if (costVal !== '') await updateCost(si.id, costVal);
+    close(); onDone();
+  }
   const erpSearchInput = qs('#f-erp-search', node);
   const erpSelectedLabel = qs('#erp-selected', node);
   const costInput = qs('#f-cost', node);
   const costField = wireCostUnitField(node, units);
 
+  nameInput.addEventListener('input', () => { nameInput.dataset.existingId = ''; });
   nameInput.addEventListener('input', debounce(async () => {
     const q = nameInput.value.trim();
     if (!q) { nameResults.style.display = 'none'; return; }
@@ -334,6 +367,7 @@ async function openAddMappingModal(supplierId, onDone) {
     nameResults.querySelectorAll('.autocomplete-item').forEach(it => {
       it.addEventListener('click', () => {
         nameInput.value = it.dataset.name;
+        nameInput.dataset.existingId = it.dataset.id; // editing this exact row
         // The stored cost is always per piece, so show it that way.
         qs('#f-cost-unit', node).value = units[0]?.key || 'piece';
         costInput.value = Number(it.dataset.cost) || '';
@@ -349,7 +383,7 @@ async function openAddMappingModal(supplierId, onDone) {
           erpSelectedLabel.textContent = '';
         }
         nameResults.style.display = 'none';
-        toast('هتعدّل على الصنف الموجود بدل ما تضيف نسخة جديدة', 'default');
+        toast('هتعدّل على الصنف الموجود ده', 'default');
       });
     });
   }, 200));
@@ -376,6 +410,10 @@ async function openAddMappingModal(supplierId, onDone) {
   }, 200));
 
   onClose(closeOnOutsideClick([nameResults, qs('#erp-results', node)]));
+
+  const saveButton = qs('.modal-footer .btn-primary', node);
+  const guardedSave = submitOnce(saveButton, saveMapping, { busyLabel: 'جارِ الحفظ...' });
+  saveButton.addEventListener('click', (e) => { e.stopImmediatePropagation(); guardedSave(close); }, true);
 
   nameInput.focus();
 }
@@ -425,13 +463,16 @@ function openCostModal(supplierItemId, onDone) {
         { label: 'إلغاء', className: 'btn-ghost', onClick: (c) => c() },
         {
           label: 'حفظ', className: 'btn-primary',
-          onClick: guarded(async (c) => {
+          onClick: async (c) => {
             const cost = costField.pieceCost();
             if (cost === '') { toast('اكتب التكلفة أولًا', 'error'); return; }
-            await updateCost(supplierItemId, cost);
-            toast('تم تحديث التكلفة', 'success');
-            c(); onDone();
-          }),
+            const button = qs('.modal-footer .btn-primary', node);
+            await submitOnce(button, async () => {
+              await updateCost(supplierItemId, cost);
+              toast('تم تحديث التكلفة', 'success');
+              c(); onDone();
+            })();
+          },
         },
       ],
     });

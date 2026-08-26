@@ -15,7 +15,7 @@
 import { getAll, getById, put, remove, getByIndex, removeWhere, nextSequence } from '../core/db.js';
 import { uid, nowIso, fmtMoney, fmtInt, fmtDate, escapeHtml, fuzzyIncludes, debounce,
          openModal, confirmDialog, toast, paginate, renderPagination, qs, qsa,
-         renderPreservingFocus, guarded, closeOnOutsideClick, printHtmlDocument } from '../core/utils.js';
+         renderPreservingFocus, guarded, closeOnOutsideClick, printHtmlDocument, submitOnce } from '../core/utils.js';
 import { autosaveField } from '../core/autosave.js';
 import { navigate } from '../core/router.js';
 import { openSupplierForm } from './suppliers.js';
@@ -616,7 +616,8 @@ function wireDetailEvents(container, review, items, units, suppliers) {
   }, 200));
   disposeOutsideClick = closeOnOutsideClick(erpResultsBox);
 
-  qs('#btn-add-line', container).addEventListener('click', guarded(async () => {
+  const addLineButton = qs('#btn-add-line', container);
+  addLineButton.addEventListener('click', submitOnce(addLineButton, async () => {
     const itemName = itemNameInput.value.trim();
     const erpItemId = itemNameInput.dataset.erpId || null;
     const qty = qs('#add-qty', container).value;
@@ -628,7 +629,7 @@ function wireDetailEvents(container, review, items, units, suppliers) {
     await renderInvoiceReviewDetail(container, review.id);
     qs('#add-unit', container).value = lastUnit;
     qs('#add-item-name', container)?.focus();
-  }));
+  }, { busyLabel: 'جارِ الإضافة...' }));
 
   const withBarcode = () => ({ showBarcode: qs('#exp-barcode', container)?.checked !== false });
 

@@ -585,6 +585,78 @@ try {
   }, savedItemId);
   check('a dozen price is stored as the piece cost', Math.abs(stored - 77.5) < 0.001, `stored=${stored}`);
 
+  // ---------- the same supplier name, two different ERP items ----------
+  const identity = await page.evaluate(async () => {
+    const { getOrCreateSupplierItem } = await import('/js/modules/supplier-items.js');
+    const db = await import('/js/core/db.js');
+    const name = 'بدي تُل مبطن';
+
+    // First time: created and linked.
+    const first = await getOrCreateSupplierItem('s3', name, { erpItemId: 'e10' });
+    // Same name, same ERP item: the same row, not a copy.
+    const again = await getOrCreateSupplierItem('s3', name, { erpItemId: 'e10' });
+    // Same name, a different ERP item: a separate row, because the supplier
+    // calls one thing what the shop splits across two items.
+    const other = await getOrCreateSupplierItem('s3', name, { erpItemId: 'e11' });
+
+    const rows = (await db.getByIndex('supplierItems', 'supplierId', 's3'))
+      .filter(r => r.supplierItemName === name);
+
+    // With no link to go on, two matches must be refused rather than guessed.
+    let refused = null;
+    try { await getOrCreateSupplierItem('s3', name); refused = false; }
+    catch (err) { refused = err.message; }
+
+    return { sameRow: first.id === again.id, separateRow: other.id !== first.id, rowCount: rows.length, refused };
+  });
+  check('the same name with the same ERP item is one row', identity.sameRow);
+  check('the same name with a different ERP item is a separate row',
+        identity.separateRow && identity.rowCount === 2, JSON.stringify(identity));
+  check('an ambiguous name is refused, not guessed at',
+        typeof identity.refused === 'string' && identity.refused.includes('اختاره من قائمة'), String(identity.refused).slice(0, 60));
+
+  // A line picked from the suggestions is tied to that exact row.
+  const tied = await page.evaluate(async () => {
+    const { addItemLine } = await import('/js/modules/returns.js');
+    const db = await import('/js/core/db.js');
+    const rows = (await db.getByIndex('supplierItems', 'supplierId', 's3'))
+      .filter(r => r.supplierItemName === 'بدي تُل مبطن');
+    const target = rows.find(r => r.erpItemId === 'e11');
+    const line = await addItemLine('r3', 's3', 'بدي تُل مبطن', 1, 5, false, target.id);
+    return { usedPicked: line.supplierItemId === target.id, erp: line.erpItemId };
+  });
+  check('a line uses the supplier item that was picked, not the first name match',
+        tied.usedPicked && tied.erp === 'e11', JSON.stringify(tied));
+
+  // ---------- clicking add twice must add one line ----------
+  const doubleClicks = await page.evaluate(async () => {
+    const wait = ms => new Promise(r => setTimeout(r, ms));
+    const results = {};
+
+    window.location.hash = '#/invoice-reviews/iv7';
+    await wait(900);
+    const invBefore = document.querySelectorAll('tr[data-line]').length;
+    document.querySelector('#add-qty').value = '3';
+    document.querySelector('#add-price').value = '10';
+    const invBtn = document.querySelector('#btn-add-line');
+    invBtn.click(); invBtn.click();
+    await wait(2500);
+    results.invoice = document.querySelectorAll('tr[data-line]').length - invBefore;
+
+    window.location.hash = '#/returns/r10';
+    await wait(900);
+    const retBefore = document.querySelectorAll('tr[data-line]').length;
+    document.querySelector('#add-item-name').value = 'صنف الضغط المزدوج';
+    document.querySelector('#add-item-qty').value = '2';
+    const retBtn = document.querySelector('#btn-add-item');
+    retBtn.click(); retBtn.click();
+    await wait(2500);
+    results.return = document.querySelectorAll('tr[data-line]').length - retBefore;
+    return results;
+  });
+  check('clicking add twice on an invoice adds one line', doubleClicks.invoice === 1, `added ${doubleClicks.invoice}`);
+  check('clicking add twice on a return adds one line', doubleClicks.return === 1, `added ${doubleClicks.return}`);
+
   check('no console or page errors', pageErrors.length === 0, pageErrors.slice(0, 3).join(' | '));
 } catch (err) {
   check('suite ran to completion', false, err.message.split('\n')[0]);

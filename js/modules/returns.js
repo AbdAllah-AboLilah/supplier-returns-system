@@ -10,7 +10,7 @@
 import { getAll, getById, getByIndex, put, remove, removeWhere, bulkPut, generateReturnNumber } from '../core/db.js';
 import { uid, nowIso, fmtMoney, fmtDate, fmtInt, escapeHtml, fuzzyIncludes, debounce,
          openModal, confirmDialog, toast, qs, qsa, paginate, renderPagination,
-         renderPreservingFocus, guarded, closeOnOutsideClick } from '../core/utils.js';
+         renderPreservingFocus, guarded, closeOnOutsideClick, submitOnce } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
 import { navigate } from '../core/router.js';
 import { searchSupplierItems, getOrCreateSupplierItem, updateCost as updateSupplierItemCost, openLinkModal } from './supplier-items.js';
@@ -130,8 +130,12 @@ export async function createDraftReturn(supplierId) {
 
 async function touchReturn(ret) { ret.updatedAt = nowIso(); await put('returns', ret); }
 
-export async function addItemLine(returnId, supplierId, supplierItemName, qty, costOverride, costIsFallback = false) {
-  const si = await getOrCreateSupplierItem(supplierId, supplierItemName);
+export async function addItemLine(returnId, supplierId, supplierItemName, qty, costOverride, costIsFallback = false, supplierItemId = null) {
+  // A name can now belong to more than one supplier item (same name, a
+  // different ERP link), so when one was picked from the suggestions the
+  // line is tied to that exact row instead of being matched by name again.
+  const picked = supplierItemId ? await getById('supplierItems', supplierItemId) : null;
+  const si = picked || await getOrCreateSupplierItem(supplierId, supplierItemName);
   const quantity = Number(qty) || 1;
 
   let unitCost = Number(si.currentCost) || 0;
@@ -746,6 +750,8 @@ function wireDetailEvents(container, ret, lines, supplier) {
   const resultsBox = qs('#add-item-results', container);
   const costInput = qs('#add-item-cost', container);
   if (nameInput) {
+    // Typing again invalidates whichever row was picked from the list.
+    nameInput.addEventListener('input', () => { nameInput.dataset.supplierItemId = ''; });
     nameInput.addEventListener('input', debounce(async () => {
       const q = nameInput.value.trim();
       if (!q) { resultsBox.style.display = 'none'; return; }
@@ -759,18 +765,19 @@ function wireDetailEvents(container, ret, lines, supplier) {
           ? `· ${fmtMoney(m.currentCost)} ج`
           : (fallbackCost ? `· <span style="color:var(--red);">${fmtMoney(fallbackCost)} ج (تكلفة النظام، مش مؤكدة)</span>` : '');
         return `
-        <div class="autocomplete-item" data-name="${escapeHtml(m.supplierItemName)}" data-cost="${effectiveCost}" data-fallback="${fallbackCost !== null ? '1' : '0'}">
+        <div class="autocomplete-item" data-supplier-item-id="${m.id}" data-name="${escapeHtml(m.supplierItemName)}" data-cost="${effectiveCost}" data-fallback="${fallbackCost !== null ? '1' : '0'}">
           <b>${escapeHtml(m.supplierItemName)}</b>
           <div class="ac-sub">${m.erpItemName ? escapeHtml(m.erpItemName) : '⚠️ غير مرتبط بعد'} ${costLabel}</div>
         </div>
       `;
       }).join('');
-      if (!exact) html += `<div class="autocomplete-item" data-name="${escapeHtml(q)}" data-cost="" data-fallback="0" style="color:var(--gold-dark);">+ إضافة "${escapeHtml(q)}" كصنف جديد لهذا المورد</div>`;
+      if (!exact) html += `<div class="autocomplete-item" data-supplier-item-id="" data-name="${escapeHtml(q)}" data-cost="" data-fallback="0" style="color:var(--gold-dark);">+ إضافة "${escapeHtml(q)}" كصنف جديد لهذا المورد</div>`;
       resultsBox.innerHTML = html || `<div class="autocomplete-empty">لا توجد نتائج</div>`;
       resultsBox.style.display = 'block';
       resultsBox.querySelectorAll('.autocomplete-item').forEach(it => {
         it.addEventListener('click', () => {
           nameInput.value = it.dataset.name;
+          nameInput.dataset.supplierItemId = it.dataset.supplierItemId || '';
           if (costInput && it.dataset.cost) {
             costInput.value = it.dataset.cost;
             const isFallback = it.dataset.fallback === '1';
@@ -803,9 +810,8 @@ function wireDetailEvents(container, ret, lines, supplier) {
     costInput.title = '';
   });
 
-  qs('#btn-add-item', container)?.addEventListener('click', async () => {
-    const btn = qs('#btn-add-item', container);
-    if (btn.disabled) return; // already mid-submit — ignore a rapid second click
+  const addItemButton = qs('#btn-add-item', container);
+  addItemButton?.addEventListener('click', submitOnce(addItemButton, async () => {
     const name = qs('#add-item-name', container).value.trim();
     const qty = qs('#add-item-qty', container).value;
     const costEl = qs('#add-item-cost', container);
@@ -821,20 +827,11 @@ function wireDetailEvents(container, ret, lines, supplier) {
     if (!name) { toast('اكتب اسم الصنف أولًا', 'error'); return; }
     if (!qty || Number(qty) <= 0) { toast('اكتب الكمية أولًا', 'error'); qs('#add-item-qty', container)?.focus(); return; }
 
-    const originalLabel = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = 'جارِ الإضافة...';
-    try {
-      await addItemLine(ret.id, ret.supplierId, name, qty, cost, costIsFallback);
-      await renderReturnDetail(container, ret.id);
-      qs('#add-item-name', container)?.focus();
-    } catch (err) {
-      console.error(err);
-      toast('حدث خطأ أثناء إضافة الصنف، حاول تاني', 'error');
-      btn.disabled = false;
-      btn.textContent = originalLabel;
-    }
-  });
+    const pickedId = qs('#add-item-name', container)?.dataset.supplierItemId || null;
+    await addItemLine(ret.id, ret.supplierId, name, qty, cost, costIsFallback, pickedId);
+    await renderReturnDetail(container, ret.id);
+    qs('#add-item-name', container)?.focus();
+  }, { busyLabel: 'جارِ الإضافة...' }));
 
   const notesInput = qs('#ret-notes', container);
   const notesSaver = notesInput
