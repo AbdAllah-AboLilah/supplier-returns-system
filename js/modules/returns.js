@@ -10,6 +10,7 @@
 import { getAll, getById, getByIndex, put, remove, removeWhere, bulkPut, generateReturnNumber } from '../core/db.js';
 import { uid, nowIso, fmtMoney, fmtDate, fmtInt, escapeHtml, fuzzyIncludes, debounce,
          openModal, confirmDialog, toast, qs, qsa, paginate, renderPagination,
+         renderPickedErp,
          renderPreservingFocus, guarded, closeOnOutsideClick, submitOnce } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
 import { navigate } from '../core/router.js';
@@ -672,6 +673,7 @@ export async function renderReturnDetail(container, returnId) {
             <label>اسم الصنف عند المورد</label>
             <input type="text" id="add-item-name" placeholder="ابدأ الكتابة...">
             <div class="autocomplete-list" id="add-item-results" style="display:none;"></div>
+            <div class="picked-erp" id="add-item-erp" style="display:none;"></div>
           </div>
           <div class="field" style="flex:0 0 90px;"><label>الكمية</label><input type="number" id="add-item-qty" placeholder="0" min="1"></div>
           <div class="field" style="flex:0 0 60px;"><label title="ق = سعر القطعة، د = سعر الدستة (هيتحول لسعر القطعة تلقائيًا)">الوحدة</label>
@@ -681,6 +683,7 @@ export async function renderReturnDetail(container, returnId) {
             </select>
           </div>
           <div class="field" style="flex:0 0 110px;"><label>التكلفة</label><input type="number" step="0.01" id="add-item-cost" placeholder="0.00"></div>
+          <div class="field" style="flex:0 0 110px;"><label>الإجمالي</label><div class="field-readout" id="add-item-total">0.00</div></div>
           <div class="field" style="flex:0 0 auto;"><button class="btn btn-primary" id="btn-add-item">+ إضافة</button></div>
         </div>
       </div>` : ''}
@@ -839,7 +842,11 @@ function wireDetailEvents(container, ret, lines, supplier) {
   const costInput = qs('#add-item-cost', container);
   if (nameInput) {
     // Typing again invalidates whichever row was picked from the list.
-    nameInput.addEventListener('input', () => { nameInput.dataset.supplierItemId = ''; });
+    const erpLine = qs('#add-item-erp', container);
+    nameInput.addEventListener('input', () => {
+      nameInput.dataset.supplierItemId = '';
+      renderPickedErp(erpLine, { state: 'none' }); // the pick it described is gone
+    });
     nameInput.addEventListener('input', debounce(async () => {
       const q = nameInput.value.trim();
       if (!q) { resultsBox.style.display = 'none'; return; }
@@ -853,19 +860,23 @@ function wireDetailEvents(container, ret, lines, supplier) {
           ? `· ${fmtMoney(m.currentCost)} ج`
           : (fallbackCost ? `· <span style="color:var(--red);">${fmtMoney(fallbackCost)} ج (تكلفة النظام، مش مؤكدة)</span>` : '');
         return `
-        <div class="autocomplete-item" data-supplier-item-id="${m.id}" data-name="${escapeHtml(m.supplierItemName)}" data-cost="${effectiveCost}" data-fallback="${fallbackCost !== null ? '1' : '0'}">
+        <div class="autocomplete-item" data-supplier-item-id="${m.id}" data-name="${escapeHtml(m.supplierItemName)}" data-erp-name="${escapeHtml(m.erpItemName || '')}" data-cost="${effectiveCost}" data-fallback="${fallbackCost !== null ? '1' : '0'}">
           <b>${escapeHtml(m.supplierItemName)}</b>
           <div class="ac-sub">${m.erpItemName ? escapeHtml(m.erpItemName) : '⚠️ غير مرتبط بعد'} ${costLabel}</div>
         </div>
       `;
       }).join('');
-      if (!exact) html += `<div class="autocomplete-item" data-supplier-item-id="" data-name="${escapeHtml(q)}" data-cost="" data-fallback="0" style="color:var(--gold-dark);">+ إضافة "${escapeHtml(q)}" كصنف جديد لهذا المورد</div>`;
+      if (!exact) html += `<div class="autocomplete-item" data-supplier-item-id="" data-name="${escapeHtml(q)}" data-erp-name="" data-cost="" data-fallback="0" style="color:var(--gold-dark);">+ إضافة "${escapeHtml(q)}" كصنف جديد لهذا المورد</div>`;
       resultsBox.innerHTML = html || `<div class="autocomplete-empty">لا توجد نتائج</div>`;
       resultsBox.style.display = 'block';
       resultsBox.querySelectorAll('.autocomplete-item').forEach(it => {
         it.addEventListener('click', () => {
           nameInput.value = it.dataset.name;
           nameInput.dataset.supplierItemId = it.dataset.supplierItemId || '';
+          renderPickedErp(erpLine, {
+            state: it.dataset.supplierItemId ? (it.dataset.erpName ? 'linked' : 'unlinked') : 'new',
+            erpName: it.dataset.erpName,
+          });
           if (costInput && it.dataset.cost) {
             costInput.value = it.dataset.cost;
             const isFallback = it.dataset.fallback === '1';
@@ -878,6 +889,7 @@ function wireDetailEvents(container, ret, lines, supplier) {
             const unitTypeEl = qs('#add-item-unit-type', container);
             if (unitTypeEl) unitTypeEl.value = 'piece';
           }
+          syncAddTotal(); // picking fills the cost without firing an input event
           resultsBox.style.display = 'none';
           // The name and (if known) cost are already filled in — the
           // one thing still missing every time is the quantity, so
@@ -897,6 +909,21 @@ function wireDetailEvents(container, ret, lines, supplier) {
     costInput.classList.remove('cost-fallback');
     costInput.title = '';
   });
+
+  // What the line being typed will come to, worked out the same way the
+  // line itself is: "د" means the cost typed is per dozen, so the piece
+  // cost is a twelfth of it and that is what the quantity multiplies.
+  const totalReadout = qs('#add-item-total', container);
+  function syncAddTotal() {
+    if (!totalReadout) return;
+    const qty = Number(qs('#add-item-qty', container)?.value) || 0;
+    const typedCost = Number(qs('#add-item-cost', container)?.value) || 0;
+    const perPiece = qs('#add-item-unit-type', container)?.value === 'dozen' ? typedCost / 12 : typedCost;
+    totalReadout.textContent = fmtMoney(qty * perPiece);
+  }
+  ['#add-item-qty', '#add-item-cost'].forEach(sel => qs(sel, container)?.addEventListener('input', syncAddTotal));
+  qs('#add-item-unit-type', container)?.addEventListener('change', syncAddTotal);
+  syncAddTotal();
 
   const addItemButton = qs('#btn-add-item', container);
   addItemButton?.addEventListener('click', submitOnce(addItemButton, async () => {

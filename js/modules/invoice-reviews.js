@@ -15,7 +15,8 @@
 import { getAll, getById, put, remove, getByIndex, removeWhere, nextSequence } from '../core/db.js';
 import { uid, nowIso, fmtMoney, fmtInt, fmtDate, escapeHtml, fuzzyIncludes, debounce,
          openModal, confirmDialog, toast, paginate, renderPagination, qs, qsa,
-         renderPreservingFocus, guarded, closeOnOutsideClick, printHtmlDocument, submitOnce } from '../core/utils.js';
+         renderPreservingFocus, guarded, closeOnOutsideClick, printHtmlDocument, submitOnce,
+         renderPickedErp } from '../core/utils.js';
 import { autosaveField } from '../core/autosave.js';
 import { navigate } from '../core/router.js';
 import { openSupplierForm } from './suppliers.js';
@@ -475,6 +476,7 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
             <label>اسم الصنف عند المورد</label>
             <input type="text" id="add-item-name" placeholder="${review.supplierId ? 'ابدأ الكتابة...' : 'اختار المورد الأول'}" autocomplete="off" ${review.supplierId ? '' : 'disabled'}>
             <div class="autocomplete-list" id="add-item-erp-results" style="display:none;"></div>
+            <div class="picked-erp" id="add-item-erp" style="display:none;"></div>
             <div class="hint" id="add-item-supplier-hint"${review.supplierId ? ' style="display:none;"' : ''}>اختار المورد فوق عشان تقدر تختار من أصنافه أو تضيف صنف جديد ليه.</div>
           </div>
           <div class="field" style="flex:0 0 90px;"><label>الكمية</label><input type="number" id="add-qty" min="0" step="any" placeholder="0"></div>
@@ -483,6 +485,7 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
             <select id="add-unit">${units.map(u => `<option value="${u.key}">${escapeHtml(u.label)}</option>`).join('')}</select>
           </div>
           <div class="field" style="flex:0 0 130px;"><label id="add-price-label">سعر الوحدة</label><input type="number" id="add-price" min="0" step="0.01" placeholder="0.00"></div>
+          <div class="field" style="flex:0 0 110px;"><label>الإجمالي</label><div class="field-readout" id="add-total">0.00</div></div>
           <div class="field" style="flex:0 0 auto;"><button class="btn btn-primary" id="btn-add-line">+ إضافة</button></div>
         </div>
       </div>
@@ -550,6 +553,9 @@ function syncAddItemToSupplier(container, review) {
   input.dataset.erpId = '';
   const results = qs('#add-item-erp-results', container);
   if (results) { results.style.display = 'none'; results.innerHTML = ''; }
+  renderPickedErp(qs('#add-item-erp', container), { state: 'none' });
+  const totalReadout = qs('#add-total', container);
+  if (totalReadout) totalReadout.textContent = fmtMoney(0);
   const priceInput = qs('#add-price', container);
   if (priceInput) { priceInput.value = ''; priceInput.dataset.piecePrice = ''; }
   const hint = qs('#add-item-supplier-hint', container);
@@ -702,6 +708,19 @@ function wireDetailEvents(container, review, items, units, suppliers) {
   // replaces whatever the picked item suggested.
   qs('#add-price', container)?.addEventListener('input', (e) => { e.target.dataset.piecePrice = ''; });
 
+  // What the line being typed will come to, worked out the way the table
+  // works it out: quantity times the price of the unit it is in.
+  const addTotalReadout = qs('#add-total', container);
+  function syncAddTotal() {
+    if (!addTotalReadout) return;
+    const qty = Number(qs('#add-qty', container)?.value) || 0;
+    const price = Number(qs('#add-price', container)?.value) || 0;
+    addTotalReadout.textContent = fmtMoney(qty * price);
+  }
+  ['#add-qty', '#add-price'].forEach(sel => qs(sel, container)?.addEventListener('input', syncAddTotal));
+  addUnit.addEventListener('change', syncAddTotal); // the unit re-expresses the price
+  syncAddTotal();
+
   // Item-name field: search ERP items as you type and link to one on
   // pick. Typing without picking still works — the line is just saved
   // unlinked (⚠️ badge), same pattern as unlinked supplier items elsewhere.
@@ -709,9 +728,11 @@ function wireDetailEvents(container, review, items, units, suppliers) {
   const erpResultsBox = qs('#add-item-erp-results', container);
   // Same list, and the same "+ add as new" option, as the returns screen:
   // the name is the supplier's name for the item, not an ERP name.
+  const pickedErpLine = qs('#add-item-erp', container);
   itemNameInput.addEventListener('input', () => {
     itemNameInput.dataset.supplierItemId = ''; // typing invalidates any previous pick
     itemNameInput.dataset.erpId = '';
+    renderPickedErp(pickedErpLine, { state: 'none' });
     const priceInput = qs('#add-price', container);
     if (priceInput) priceInput.dataset.piecePrice = '';
   });
@@ -723,12 +744,12 @@ function wireDetailEvents(container, review, items, units, suppliers) {
     const exact = matches.some(m => m.supplierItemName.trim() === q);
     let html = matches.map(m => `
       <div class="autocomplete-item" data-supplier-item-id="${m.id}" data-name="${escapeHtml(m.supplierItemName)}"
-           data-erp-id="${m.erpItemId || ''}" data-cost="${Number(m.currentCost) || 0}">
+           data-erp-id="${m.erpItemId || ''}" data-erp-name="${escapeHtml(m.erpItemName || '')}" data-cost="${Number(m.currentCost) || 0}">
         <b>${escapeHtml(m.supplierItemName)}</b>
         <div class="ac-sub">${m.erpItemName ? escapeHtml(m.erpItemName) : '⚠️ غير مرتبط'}${Number(m.currentCost) > 0 ? ` · ${fmtMoney(m.currentCost)} ج للقطعة` : ''}</div>
       </div>`).join('');
     if (!exact) {
-      html += `<div class="autocomplete-item" data-supplier-item-id="" data-name="${escapeHtml(q)}" data-erp-id="" data-cost="0" style="color:var(--gold-dark);">+ إضافة "${escapeHtml(q)}" كصنف جديد لهذا المورد</div>`;
+      html += `<div class="autocomplete-item" data-supplier-item-id="" data-name="${escapeHtml(q)}" data-erp-id="" data-erp-name="" data-cost="0" style="color:var(--gold-dark);">+ إضافة "${escapeHtml(q)}" كصنف جديد لهذا المورد</div>`;
     }
     erpResultsBox.innerHTML = html;
     erpResultsBox.style.display = 'block';
@@ -737,6 +758,10 @@ function wireDetailEvents(container, review, items, units, suppliers) {
         itemNameInput.value = it.dataset.name;
         itemNameInput.dataset.supplierItemId = it.dataset.supplierItemId || '';
         itemNameInput.dataset.erpId = it.dataset.erpId || '';
+        renderPickedErp(pickedErpLine, {
+          state: it.dataset.supplierItemId ? (it.dataset.erpName ? 'linked' : 'unlinked') : 'new',
+          erpName: it.dataset.erpName,
+        });
         // The stored cost is per piece; show it in whichever unit is picked.
         const cost = Number(it.dataset.cost) || 0;
         const priceInput = qs('#add-price', container);
@@ -745,6 +770,7 @@ function wireDetailEvents(container, review, items, units, suppliers) {
           priceInput.value = Number((cost * (Number(unit?.multiplier) || 1)).toFixed(4));
           priceInput.dataset.piecePrice = String(cost); // unrounded, for a later unit switch
         }
+        syncAddTotal(); // picking fills the price without firing an input event
         erpResultsBox.style.display = 'none';
         qs('#add-qty', container)?.focus();
       });
