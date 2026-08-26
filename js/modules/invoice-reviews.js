@@ -19,7 +19,7 @@ import { uid, nowIso, fmtMoney, fmtInt, fmtDate, escapeHtml, fuzzyIncludes, debo
 import { autosaveField } from '../core/autosave.js';
 import { navigate } from '../core/router.js';
 import { openSupplierForm } from './suppliers.js';
-import { findErpItems } from './item-links.js';
+import { searchSupplierItems, getOrCreateSupplierItem, updateCost } from './supplier-items.js';
 import { getUnits, saveUnits, unitByKey } from '../core/units.js';
 import { drawReport, canvasToBlob } from './report-canvas.js';
 
@@ -191,11 +191,14 @@ export async function deleteReview(reviewId) {
   await remove('invoiceReviews', reviewId);
 }
 
-export async function addReviewItem(reviewId, { itemName, erpItemId, qty, unitKey, price }) {
+export async function addReviewItem(reviewId, { itemName, erpItemId, supplierItemId, qty, unitKey, price }) {
   const line = {
     id: uid(), reviewId,
     itemName: (itemName || '').trim(),
     erpItemId: erpItemId || null,
+    // Which of the supplier's items this line is, so a price typed here
+    // feeds the same cost the returns screen reads.
+    supplierItemId: supplierItemId || null,
     qty: Number(qty) || 0, unitKey, price: Number(price) || 0,
     createdAt: nowIso(),
   };
@@ -217,6 +220,23 @@ export async function removeReviewItem(lineId) {
   if (!line) throw new Error(MISSING_LINE);
   await remove('invoiceReviewItems', lineId);
   getById('invoiceReviews', line.reviewId).then(r => { if (r) touch(r); });
+}
+
+// A review is where a supplier's own prices get transcribed, so a price
+// entered here is the freshest known cost for that item — the same rule
+// the returns screen already follows. It is never silent: the toast says
+// which item moved, and how many share the name.
+async function syncSupplierCostFromLine(line, units) {
+  if (!line || !line.supplierItemId) return;
+  const { piecePrice } = computeLine(line, units);
+  if (!(piecePrice > 0)) return;
+  const si = await getById('supplierItems', line.supplierItemId);
+  if (!si || (Number(si.currentCost) || 0) === piecePrice) return;
+  const { updatedCount } = await updateCost(si.id, piecePrice, si);
+  if (!updatedCount) return;
+  toast(updatedCount > 1
+    ? `تكلفة "${si.supplierItemName}" اتحدّثت عند المورد (${updatedCount} أصناف بنفس الاسم)`
+    : `تكلفة "${si.supplierItemName}" اتحدّثت عند المورد`, 'success');
 }
 
 // ---------- Photo capture (compressed, stored inline — no separate storage service needed) ----------
@@ -444,9 +464,10 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
         <div class="section-title">إضافة صنف</div>
         <div class="form-row" style="align-items:flex-end;">
           <div class="field autocomplete" style="flex:2;">
-            <label>الصنف (اختياري — يربط بقاعدة أصناف ERP)</label>
-            <input type="text" id="add-item-name" placeholder="ابدأ الكتابة للبحث في أصناف ERP..." autocomplete="off">
+            <label>اسم الصنف عند المورد</label>
+            <input type="text" id="add-item-name" placeholder="${review.supplierId ? 'ابدأ الكتابة...' : 'اختار المورد الأول'}" autocomplete="off" ${review.supplierId ? '' : 'disabled'}>
             <div class="autocomplete-list" id="add-item-erp-results" style="display:none;"></div>
+            ${review.supplierId ? '' : '<div class="hint">اختار المورد فوق عشان تقدر تختار من أصنافه أو تضيف صنف جديد ليه.</div>'}
           </div>
           <div class="field" style="flex:0 0 90px;"><label>الكمية</label><input type="number" id="add-qty" min="0" step="any" placeholder="0"></div>
           <div class="field" style="flex:0 0 120px;">
@@ -566,13 +587,17 @@ function wireDetailEvents(container, review, items, units, suppliers) {
     recalcLine(container, inp.dataset.id, units);
   }, { delay: 500 })));
   qsa('.ln-price', container).forEach(inp => savers.push(autosaveField(inp, async (val) => {
-    await updateReviewItem(inp.dataset.id, { price: Number(val) || 0 });
+    const line = await updateReviewItem(inp.dataset.id, { price: Number(val) || 0 });
     recalcLine(container, inp.dataset.id, units);
+    await syncSupplierCostFromLine(line, units);
   }, { delay: 500 })));
-  qsa('.ln-unit', container).forEach(sel => sel.addEventListener('change', async () => {
-    await updateReviewItem(sel.dataset.id, { unitKey: sel.value });
+  qsa('.ln-unit', container).forEach(sel => sel.addEventListener('change', guarded(async () => {
+    // The unit changes what the same number means per piece, so the
+    // supplier cost follows it too.
+    const line = await updateReviewItem(sel.dataset.id, { unitKey: sel.value });
     recalcLine(container, sel.dataset.id, units);
-  }));
+    await syncSupplierCostFromLine(line, units);
+  })));
   qsa('.ln-remove', container).forEach(b => b.addEventListener('click', guarded(async () => {
     await removeReviewItem(b.dataset.id);
     renderInvoiceReviewDetail(container, review.id);
@@ -597,18 +622,41 @@ function wireDetailEvents(container, review, items, units, suppliers) {
   // unlinked (⚠️ badge), same pattern as unlinked supplier items elsewhere.
   const itemNameInput = qs('#add-item-name', container);
   const erpResultsBox = qs('#add-item-erp-results', container);
+  // Same list, and the same "+ add as new" option, as the returns screen:
+  // the name is the supplier's name for the item, not an ERP name.
+  itemNameInput.addEventListener('input', () => {
+    itemNameInput.dataset.supplierItemId = ''; // typing invalidates any previous pick
+    itemNameInput.dataset.erpId = '';
+  });
   itemNameInput.addEventListener('input', debounce(async () => {
-    itemNameInput.dataset.erpId = ''; // typing invalidates any previous pick
+    if (!review.supplierId) return;
     const q = itemNameInput.value.trim();
     if (!q) { erpResultsBox.style.display = 'none'; return; }
-    const matches = await findErpItems(q, 8);
-    if (!matches.length) { erpResultsBox.innerHTML = `<div class="autocomplete-empty">لا توجد نتائج — هتتحفظ كصنف غير مرتبط</div>`; erpResultsBox.style.display = 'block'; return; }
-    erpResultsBox.innerHTML = matches.map(m => `<div class="autocomplete-item" data-id="${m.id}" data-name="${escapeHtml(m.name)}"><b>${escapeHtml(m.name)}</b><div class="ac-sub">${escapeHtml(m.barcode || '')}</div></div>`).join('');
+    const matches = await searchSupplierItems(review.supplierId, q, 8);
+    const exact = matches.some(m => m.supplierItemName.trim() === q);
+    let html = matches.map(m => `
+      <div class="autocomplete-item" data-supplier-item-id="${m.id}" data-name="${escapeHtml(m.supplierItemName)}"
+           data-erp-id="${m.erpItemId || ''}" data-cost="${Number(m.currentCost) || 0}">
+        <b>${escapeHtml(m.supplierItemName)}</b>
+        <div class="ac-sub">${m.erpItemName ? escapeHtml(m.erpItemName) : '⚠️ غير مرتبط'}${Number(m.currentCost) > 0 ? ` · ${fmtMoney(m.currentCost)} ج للقطعة` : ''}</div>
+      </div>`).join('');
+    if (!exact) {
+      html += `<div class="autocomplete-item" data-supplier-item-id="" data-name="${escapeHtml(q)}" data-erp-id="" data-cost="0" style="color:var(--gold-dark);">+ إضافة "${escapeHtml(q)}" كصنف جديد لهذا المورد</div>`;
+    }
+    erpResultsBox.innerHTML = html;
     erpResultsBox.style.display = 'block';
     erpResultsBox.querySelectorAll('.autocomplete-item').forEach(it => {
       it.addEventListener('click', () => {
         itemNameInput.value = it.dataset.name;
-        itemNameInput.dataset.erpId = it.dataset.id;
+        itemNameInput.dataset.supplierItemId = it.dataset.supplierItemId || '';
+        itemNameInput.dataset.erpId = it.dataset.erpId || '';
+        // The stored cost is per piece; show it in whichever unit is picked.
+        const cost = Number(it.dataset.cost) || 0;
+        const priceInput = qs('#add-price', container);
+        if (cost > 0 && priceInput) {
+          const unit = unitByKey(units, qs('#add-unit', container).value);
+          priceInput.value = Number((cost * (Number(unit?.multiplier) || 1)).toFixed(4));
+        }
         erpResultsBox.style.display = 'none';
         qs('#add-qty', container)?.focus();
       });
@@ -619,13 +667,26 @@ function wireDetailEvents(container, review, items, units, suppliers) {
   const addLineButton = qs('#btn-add-line', container);
   addLineButton.addEventListener('click', submitOnce(addLineButton, async () => {
     const itemName = itemNameInput.value.trim();
-    const erpItemId = itemNameInput.dataset.erpId || null;
     const qty = qs('#add-qty', container).value;
     const unitKey = qs('#add-unit', container).value;
     const price = qs('#add-price', container).value;
     if (!qty || Number(qty) <= 0) { toast('اكتب الكمية أولًا', 'error'); return; }
+
+    // Resolve the name against the supplier's items — creating it there if
+    // it is new — so an item first met on an invoice is available on the
+    // next return without being typed again.
+    let supplierItemId = itemNameInput.dataset.supplierItemId || null;
+    let erpItemId = itemNameInput.dataset.erpId || null;
+    if (review.supplierId && itemName) {
+      const si = supplierItemId
+        ? await getById('supplierItems', supplierItemId)
+        : await getOrCreateSupplierItem(review.supplierId, itemName);
+      if (si) { supplierItemId = si.id; erpItemId = si.erpItemId || null; }
+    }
+
     const lastUnit = unitKey; // remember for next row, matches original tool's UX
-    await addReviewItem(review.id, { itemName, erpItemId, qty, unitKey, price });
+    const line = await addReviewItem(review.id, { itemName, erpItemId, supplierItemId, qty, unitKey, price });
+    await syncSupplierCostFromLine(line, units);
     await renderInvoiceReviewDetail(container, review.id);
     qs('#add-unit', container).value = lastUnit;
     qs('#add-item-name', container)?.focus();

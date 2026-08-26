@@ -738,6 +738,53 @@ try {
         draftButtons.bulk && draftButtons.perLine === 3 && !sentButtons.bulk && sentButtons.perLine === 0,
         `draft=${JSON.stringify(draftButtons)} sent=${JSON.stringify(sentButtons)}`);
 
+  // ---------- an invoice review works off the supplier's items ----------
+  await goto('/invoice-reviews/iv11');
+  await page.waitForTimeout(900);
+  await page.click('#add-item-name');
+  await page.type('#add-item-name', 'كريب', { delay: 50 });
+  await page.waitForTimeout(700);
+  const suggestions = await page.evaluate(() => ({
+    label: document.querySelector('label[for], .field.autocomplete label')?.textContent.trim(),
+    items: Array.from(document.querySelectorAll('#add-item-erp-results .autocomplete-item'))
+      .map(el => ({ hasSupplierItem: !!el.dataset.supplierItemId, text: el.textContent.replace(/\s+/g, ' ').trim() })),
+  }));
+  const addNew = suggestions.items[suggestions.items.length - 1];
+  check('the invoice item field suggests the supplier\'s own items',
+        suggestions.items.length > 1 && suggestions.items[0].hasSupplierItem && addNew.text.includes('كصنف جديد لهذا المورد'),
+        suggestions.items[0]?.text);
+
+  // Picking one fills in that item's piece price.
+  await page.locator('#add-item-erp-results .autocomplete-item').first().click();
+  await page.waitForTimeout(300);
+  const picked = await page.evaluate(() => ({
+    name: document.querySelector('#add-item-name').value,
+    price: document.querySelector('#add-price').value,
+    linked: !!document.querySelector('#add-item-name').dataset.supplierItemId,
+  }));
+  check('picking a supplier item fills its piece price', picked.linked && Number(picked.price) > 0, JSON.stringify(picked));
+
+  // A name that is new to the supplier is created there, and the price
+  // typed on the invoice becomes that item's cost — per piece.
+  await page.fill('#add-item-name', 'صنف اتعرف من الفاتورة');
+  await page.waitForTimeout(400);
+  await page.fill('#add-qty', '2');
+  await page.fill('#add-price', '60');
+  await page.selectOption('#add-unit', 'dozen');
+  await page.click('#btn-add-line');
+  await page.waitForTimeout(2500);
+  const crossed = await page.evaluate(async () => {
+    const db = await import('/js/core/db.js');
+    const review = await db.getById('invoiceReviews', 'iv11');
+    const items = await db.getByIndex('supplierItems', 'supplierId', review.supplierId);
+    const created = items.find(i => i.supplierItemName === 'صنف اتعرف من الفاتورة');
+    const lines = await db.getByIndex('invoiceReviewItems', 'reviewId', 'iv11');
+    const line = lines.find(l => l.itemName === 'صنف اتعرف من الفاتورة');
+    return { created: !!created, cost: created?.currentCost, linked: line?.supplierItemId === created?.id };
+  });
+  check('a name new to the supplier is added to their items', crossed.created && crossed.linked, JSON.stringify(crossed));
+  check('a dozen price on the invoice becomes the piece cost', crossed.cost === 5, `cost=${crossed.cost}`);
+
   check('no console or page errors', pageErrors.length === 0, pageErrors.slice(0, 3).join(' | '));
 } catch (err) {
   check('suite ran to completion', false, err.message.split('\n')[0]);
