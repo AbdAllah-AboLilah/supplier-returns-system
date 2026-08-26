@@ -1,14 +1,20 @@
-# Bumps the app version on every push to main, so a deployed browser
-# notices the new build (js/core/version.js, version.json, the sw.js
-# cache name and CHANGELOG.md all move together — see
-# scripts/bump-version.js) and reloads itself.
+# Runs the smoke suite on every push to main and on every pull request,
+# then — only if it passed — bumps the app version so deployed browsers
+# pick the new build up (js/core/version.js, version.json, the sw.js
+# cache name and CHANGELOG.md move together; see scripts/bump-version.js).
 #
-# The bump is committed back to main with [skip ci] so the push it makes
-# does not trigger this workflow again.
-name: Bump version and deploy
+# The version bump is what pushes an update out to everyone who has the
+# app open, so gating it on the tests means a broken build never gets
+# handed to the shop automatically.
+#
+# The bump is committed back to main with [skip ci] so it does not
+# retrigger this workflow.
+name: Test, bump version and deploy
 
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
 
 permissions:
@@ -19,9 +25,33 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  bump:
+  test:
+    name: Smoke tests
     runs-on: ubuntu-latest
-    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dev dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Install the browser the suite drives
+        run: npx playwright install --with-deps chromium
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run the smoke suite
+        run: npm test
+
+  bump:
+    name: Bump version
+    needs: test
+    if: github.event_name == 'push' && !contains(github.event.head_commit.message, '[skip ci]')
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
@@ -33,7 +63,9 @@ jobs:
 
       - name: Bump patch version
         id: bump
-        run: echo "version=$(node scripts/bump-version.js patch)" >> "$GITHUB_OUTPUT"
+        run: |
+          NOTE=$(git log -1 --pretty=%s | sed 's/\[skip ci\]//g' | xargs)
+          echo "version=$(node scripts/bump-version.js patch "$NOTE")" >> "$GITHUB_OUTPUT"
 
       - name: Commit the bump
         run: |

@@ -63,7 +63,11 @@ sw = sw.replace(/const CACHE_NAME = 'returns-system-v[\d.]+'/, `const CACHE_NAME
 fs.writeFileSync(swPath, sw);
 
 // CHANGELOG.md
-const entry = `## ${nextStr} — ${today}\n\n- تحديث تلقائي.\n\n`;
+// An optional second argument becomes the entry text — CI passes the
+// commit subject, so the auto-generated entries say what actually
+// changed instead of a generic "تحديث تلقائي.".
+const note = (process.argv[3] || '').trim() || 'تحديث تلقائي.';
+const entry = `## ${nextStr} — ${today}\n\n- ${note}\n\n`;
 const existingChangelog = fs.existsSync(changelogPath) ? fs.readFileSync(changelogPath, 'utf8') : '# سجل الإصدارات\n\n';
 const headerEnd = existingChangelog.indexOf('\n\n') + 2;
 const updatedChangelog = existingChangelog.slice(0, headerEnd) + entry + existingChangelog.slice(headerEnd);

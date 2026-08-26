@@ -13,6 +13,19 @@ python3 -m http.server 8080
 
 وبعدين افتح `http://localhost:8080`.
 
+## الاختبارات
+
+في مجموعة اختبارات بتفتح التطبيق في متصفح حقيقي وتمشي على كل الشاشات، وبتشتغل على **نسخة وهمية من قاعدة البيانات في الذاكرة** — يعني عمرها ما بتلمس بيانات Firestore الحقيقية.
+
+```bash
+npm install                                  # أول مرة بس
+npx playwright install chromium              # أول مرة بس
+npm test                                     # تشغيل الاختبارات
+npm run lint                                 # فحص الكود
+```
+
+الاختبارات دي بتشتغل تلقائيًا في GitHub على كل رفعة على `main` وعلى كل Pull Request. **ولو وقعت، رقم الإصدار مش بيترفع** — يعني النسخة اللي فيها مشكلة مش بتتبعت تلقائيًا للأجهزة اللي فاتحة النظام.
+
 ## الرفع على GitHub Pages
 
 1. ارفع محتويات هذا المجلد لمستودع جديد على GitHub (اسم مقترح: `supplier-returns-system`).
@@ -28,6 +41,7 @@ python3 -m http.server 8080
   - `sw.js` (اسم الكاش، عشان النسخة القديمة تتمسح من متصفح المستخدم)
   - `CHANGELOG.md`
   - ويعمل commit تاني تلقائيًا بنفس الـ push، فمش محتاج تعمل حاجة يدويًا.
+  - رفع رقم الإصدار بيحصل **بعد** ما الاختبارات تنجح فقط.
 - التطبيق نفسه بيفحص `version.json` كل 5 دقائق (وكل مرة ترجع للتبويب)، ولو لقى رقم إصدار مختلف عن اللي شغال عندك، بيظهر رسالة ويعمل تحديث تلقائي (reload) بدون ما تعمل حاجة.
 - لو حبيت ترفع رقم إصدار **minor** أو **major** بدل الافتراضي (patch)، شغّل يدويًا قبل الـ push:
   ```bash
@@ -64,9 +78,10 @@ sw.js                   ← Service Worker (تخزين أوفلاين + كشف �
 version.json            ← يُقرأ في وقت التشغيل لاكتشاف نسخة أحدث
 css/styles.css
 js/
-  core/                 ← db.js (Firestore)، firebase-init.js، migrate-to-firebase.js، router.js، utils.js، audit.js، version.js، autosave.js، brand.js، sync-status.js
-  modules/              ← dashboard، suppliers، items، excel-import، supplier-items، returns، return-export، audit-log، settings
+  core/                 ← db.js (Firestore)، firebase-init.js، migrate-to-firebase.js، router.js، utils.js، audit.js، version.js، autosave.js، sync-status.js
+  modules/              ← dashboard، suppliers، items، item-links، excel-import، supplier-items، returns، return-export، invoice-reviews، audit-log، settings
 scripts/bump-version.js
+tests/                  ← اختبارات المتصفح (smoke.mjs + نسخة وهمية من قاعدة البيانات)
 .github/workflows/bump-version-and-deploy.yml
 firestore.rules
 CHANGELOG.md
