@@ -79,8 +79,8 @@ async function renderDashboardContent(container) {
 
   const actions = [
     { id: 'ai-unreg', dot: 'dot-red', label: 'مرتجعات لم تُسجل على ERP', count: unregistered.length, route: '/returns/unregistered' },
-    { id: 'ai-replacements', dot: 'dot-teal', label: 'مرتجعات في انتظار استلام البدائل', count: awaitingReplacements.length, route: '/returns/sent' },
-    { id: 'ai-editing', dot: 'dot-amber', label: 'مرتجعات قيد التعديل بعد الإرسال', count: editing.length, route: '/returns/sent' },
+    { id: 'ai-replacements', dot: 'dot-teal', label: 'مرتجعات في انتظار استلام البدائل', count: awaitingReplacements.length, route: '/returns/awaiting-replacements' },
+    { id: 'ai-editing', dot: 'dot-amber', label: 'مرتجعات قيد التعديل بعد الإرسال', count: editing.length, route: '/returns/editing' },
     { id: 'ai-unlinked', dot: 'dot-gold', label: 'أصناف موردين غير مربوطة', count: unlinked.length, route: '/supplier-items/unlinked' },
   ];
   const needsAction = actions.filter(a => a.count > 0);

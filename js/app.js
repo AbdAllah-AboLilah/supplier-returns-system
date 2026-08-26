@@ -13,7 +13,7 @@ import { renderSuppliersList, renderSupplierDetail } from './modules/suppliers.j
 import { renderItemsList } from './modules/items.js';
 import { renderExcelImportWizard } from './modules/excel-import.js';
 import { renderUnlinkedView, renderAllSupplierItemsView } from './modules/supplier-items.js';
-import { renderReturnsList, renderReturnDetail } from './modules/returns.js';
+import { renderReturnsList, renderReturnDetail, RETURN_FILTERS } from './modules/returns.js';
 import { renderAuditLogView } from './modules/audit-log.js';
 import { renderSettingsView } from './modules/settings.js';
 import { renderInvoiceReviewsList, renderInvoiceReviewDetail } from './modules/invoice-reviews.js';
@@ -31,10 +31,17 @@ registerRoute('/suppliers', { navKey: 'suppliers', title: 'قائمة المور
 registerRoute('/supplier-items', { navKey: 'supplier-items-all', title: 'أصناف الموردين' }, ({ container }) => renderAllSupplierItemsView(container));
 registerRoute('/suppliers/:id', { navKey: 'suppliers', title: 'ملف المورد' }, ({ container, params }) => renderSupplierDetail(container, params.id));
 
-registerRoute('/returns/active', { navKey: 'returns-active', title: 'المرتجعات النشطة' }, ({ container }) => renderReturnsList(container, 'active'));
-registerRoute('/returns/sent', { navKey: 'returns-sent', title: 'المرتجعات المرسلة' }, ({ container }) => renderReturnsList(container, 'sent'));
-registerRoute('/returns/unregistered', { navKey: 'returns-unregistered', title: 'غير المسجلة على ERP' }, ({ container }) => renderReturnsList(container, 'unregistered'));
-registerRoute('/returns/archive', { navKey: 'returns-archive', title: 'الأرشيف' }, ({ container }) => renderReturnsList(container, 'archive'));
+// One route per status filter. The sidebar links to four of them; the
+// status dropdown on the list reaches all of them (see RETURN_FILTERS).
+const RETURN_ROUTE_NAV = {
+  active: 'returns-active', sent: 'returns-sent',
+  unregistered: 'returns-unregistered', archive: 'returns-archive',
+};
+RETURN_FILTERS.forEach(filter => {
+  registerRoute(`/returns/${filter.key}`,
+    { navKey: RETURN_ROUTE_NAV[filter.key] || 'returns-active', title: filter.label },
+    ({ container }) => renderReturnsList(container, filter.key));
+});
 registerRoute('/returns/:id', { navKey: 'returns-active', title: 'المرتجعة' }, ({ container, params }) => renderReturnDetail(container, params.id));
 
 registerRoute('/audit', { navKey: 'audit', title: 'سجل العمليات' }, ({ container }) => renderAuditLogView(container));
@@ -72,9 +79,61 @@ qs('#app-content').innerHTML = '<div class="empty-state"><div class="empty-icon"
   initRouter(qs('#app-content'), onNavigate);
 })();
 
-// ---------- Mobile nav toggle ----------
+// ---------- Mobile nav drawer ----------
+// The drawer used to be nothing but a CSS class, which caused two things
+// on a phone. Opening it by mistake and pressing the system back button
+// navigated the app (or left it) instead of just closing the drawer. And
+// tapping the screen you were already on did nothing at all: the drawer
+// only closed inside onNavigate, which runs on hashchange, and the hash
+// had not changed — so you had to go somewhere else and come back.
+//
+// It now takes a history entry of its own while open, so back closes it,
+// and nav taps are handled here rather than left to the anchor.
 
-qs('#menu-toggle').addEventListener('click', () => qs('#app-shell').classList.toggle('nav-open'));
+const shell = qs('#app-shell');
+const navHasHistoryEntry = () => !!(window.history.state && window.history.state.navOpen);
+
+function openNav() {
+  if (shell.classList.contains('nav-open')) return;
+  shell.classList.add('nav-open');
+  window.history.pushState({ navOpen: true }, '');
+}
+
+function closeNav({ fromHistory = false } = {}) {
+  if (!shell.classList.contains('nav-open')) return;
+  shell.classList.remove('nav-open');
+  // Give the entry back, unless it was the back button that just consumed it.
+  if (!fromHistory && navHasHistoryEntry()) window.history.back();
+}
+
+qs('#menu-toggle').addEventListener('click', () => {
+  if (shell.classList.contains('nav-open')) closeNav(); else openNav();
+});
+
+window.addEventListener('popstate', () => {
+  if (shell.classList.contains('nav-open')) closeNav({ fromHistory: true });
+});
+
+qs('#main-nav').addEventListener('click', (e) => {
+  const link = e.target.closest('.nav-link');
+  if (!link) return;
+  e.preventDefault();
+  const target = link.getAttribute('href'); // e.g. "#/items"
+  const reuseDrawerEntry = navHasHistoryEntry();
+  shell.classList.remove('nav-open');
+
+  if (reuseDrawerEntry) {
+    // Spend the drawer's entry on the destination rather than stacking a
+    // second one, so back still goes to the screen you came from.
+    window.history.replaceState(null, '', target);
+  } else if (window.location.hash !== target) {
+    window.history.pushState(null, '', target);
+  }
+  // replaceState/pushState do not fire hashchange, and tapping the screen
+  // you are already on does not change the hash at all — either way the
+  // router is told to render, which also refreshes the screen's data.
+  window.dispatchEvent(new Event('hashchange'));
+});
 
 qs('#btn-back').addEventListener('click', () => {
   // Hash navigation already pushes a browser history entry on every

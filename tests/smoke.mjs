@@ -473,6 +473,78 @@ try {
   });
   check('settle() waits for the value to be stored', settled.afterSettle === 'جديد', JSON.stringify(settled));
 
+  // ---------- status filter on the returns list ----------
+  await goto('/returns/active');
+  await page.waitForTimeout(700);
+  const statusFilter = await page.evaluate(() => {
+    const sel = document.querySelector('#ret-status-filter');
+    return sel ? { exists: true, value: sel.value, options: Array.from(sel.options).map(o => o.value) } : { exists: false };
+  });
+  check('the returns list has a status filter set to the current view',
+        statusFilter.exists && statusFilter.value === 'active' && statusFilter.options.includes('draft') && statusFilter.options.includes('awaiting-replacements'),
+        JSON.stringify(statusFilter.options));
+
+  await page.selectOption('#ret-status-filter', 'draft');
+  await page.waitForTimeout(800);
+  const afterFilter = await page.evaluate(() => ({
+    hash: window.location.hash,
+    title: document.querySelector('#topbar-title')?.textContent,
+    allDrafts: Array.from(document.querySelectorAll('#app-content tbody tr'))
+      .every(tr => tr.textContent.includes('مسودة')),
+  }));
+  check('choosing a status shows only that status',
+        afterFilter.hash === '#/returns/draft' && afterFilter.title === 'مسودة' && afterFilter.allDrafts,
+        JSON.stringify(afterFilter));
+
+  // ---------- the drawer, on a phone ----------
+  const drawer = await page.evaluate(async () => {
+    const wait = ms => new Promise(r => setTimeout(r, ms));
+    const shell = document.querySelector('#app-shell');
+    window.location.hash = '#/items';
+    await wait(400);
+
+    document.querySelector('#menu-toggle').click();
+    await wait(100);
+    const opened = shell.classList.contains('nav-open');
+
+    // The system back button: it must close the drawer, not leave the screen.
+    const hashWhileOpen = window.location.hash;
+    window.history.back();
+    await wait(400);
+    const afterBack = { open: shell.classList.contains('nav-open'), hash: window.location.hash };
+
+    // Tapping the screen you are already on must close the drawer.
+    document.querySelector('#menu-toggle').click();
+    await wait(100);
+    document.querySelector('.nav-link[data-nav="items"]').click();
+    await wait(400);
+    const afterSameLink = { open: shell.classList.contains('nav-open'), hash: window.location.hash };
+
+    return { opened, hashWhileOpen, afterBack, afterSameLink };
+  });
+  check('the back button closes the drawer instead of leaving the screen',
+        drawer.opened && drawer.afterBack.open === false && drawer.afterBack.hash === drawer.hashWhileOpen,
+        JSON.stringify(drawer.afterBack));
+  check('tapping the screen you are already on closes the drawer',
+        drawer.afterSameLink.open === false && drawer.afterSameLink.hash === '#/items',
+        JSON.stringify(drawer.afterSameLink));
+
+  // ---------- which date a report carries ----------
+  const dates = await page.evaluate(async () => {
+    const { buildReturnReportSpec } = await import('/js/modules/return-export.js');
+    const keys = ['supplierName', 'qty'];
+    const draft = buildReturnReportSpec('', { returnNumber: 'R1', status: 'draft', sentAt: null,
+      createdAt: '2026-01-01T10:00:00Z', updatedAt: '2026-08-20T10:00:00Z' }, null, [], keys);
+    const sent = buildReturnReportSpec('', { returnNumber: 'R2', status: 'sent', sentAt: '2026-08-22T10:00:00Z',
+      createdAt: '2026-01-01T10:00:00Z', updatedAt: '2026-08-25T10:00:00Z' }, null, [], keys);
+    return { draft: draft.dateLabel, sent: sent.dateLabel };
+  });
+  check('a draft report carries its last-edited date',
+        dates.draft.startsWith('آخر تعديل:') && dates.draft.includes('2026') && !dates.draft.includes('01/01'),
+        dates.draft);
+  check('a sent report carries the send date instead',
+        dates.sent.startsWith('تاريخ الإرسال:') && dates.sent.includes('22'), dates.sent);
+
   check('no console or page errors', pageErrors.length === 0, pageErrors.slice(0, 3).join(' | '));
 } catch (err) {
   check('suite ran to completion', false, err.message.split('\n')[0]);

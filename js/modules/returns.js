@@ -322,23 +322,29 @@ export async function collectExportLines(returnId, supplierId) {
 
 const listState = { page: 1, pageSize: 50, query: '', supplierFilter: '', dateFrom: '', dateTo: '' };
 
-const FILTER_LABELS = {
-  active: 'المرتجعات النشطة',
-  sent: 'المرتجعات المرسلة',
-  unregistered: 'غير المسجلة على ERP',
-  archive: 'الأرشيف',
-};
+// Every way of slicing the returns list, in the order they appear in the
+// status filter. The four the sidebar links to were the only ones that
+// existed; the rest were states the system already tracked with no way to
+// list them.
+export const RETURN_FILTERS = [
+  { key: 'all', label: 'كل المرتجعات', match: () => true },
+  { key: 'draft', label: 'مسودة', match: r => r.status === 'draft' },
+  { key: 'active', label: 'المرتجعات النشطة', match: r => r.status !== 'closed' },
+  { key: 'sent', label: 'المرتجعات المرسلة', match: r => r.status === 'sent' },
+  { key: 'editing', label: 'قيد التعديل بعد الإرسال', match: r => r.status === 'sent' && r.editingUnlocked },
+  // Only "unregistered" when there is actually a credit portion waiting
+  // on ERP — a pure-exchange return will never need registering.
+  { key: 'unregistered', label: 'غير المسجلة على ERP', match: r => r.status === 'sent' && r.hasCreditLines && !r.erpRegistered },
+  { key: 'awaiting-replacements', label: 'في انتظار استلام البدائل', match: r => r.status === 'sent' && r.pendingReplacements > 0 },
+  { key: 'archive', label: 'الأرشيف', match: r => r.status === 'closed' },
+];
+
+const FILTER_BY_KEY = Object.fromEntries(RETURN_FILTERS.map(f => [f.key, f]));
+const FILTER_LABELS = Object.fromEntries(RETURN_FILTERS.map(f => [f.key, f.label]));
 
 function applyFilter(rows, key) {
-  switch (key) {
-    case 'active': return rows.filter(r => r.status !== 'closed');
-    case 'sent': return rows.filter(r => r.status === 'sent');
-    // Only flag as "unregistered" if there's actually a credit portion
-    // waiting on ERP — a pure-exchange return will never need this.
-    case 'unregistered': return rows.filter(r => r.status === 'sent' && r.hasCreditLines && !r.erpRegistered);
-    case 'archive': return rows.filter(r => r.status === 'closed');
-    default: return rows;
-  }
+  const filter = FILTER_BY_KEY[key];
+  return filter ? rows.filter(filter.match) : rows;
 }
 
 function statusBadge(r) {
@@ -380,6 +386,11 @@ export async function renderReturnsList(container, filterKey, presetSupplierId =
         <button class="btn btn-primary" id="btn-new-return">+ مرتجعة جديدة</button>
       </div>
       <div class="filter-bar">
+        ${!presetSupplierId ? `
+        <label>الحالة</label>
+        <select id="ret-status-filter">
+          ${RETURN_FILTERS.map(f => `<option value="${f.key}" ${f.key === filterKey ? 'selected' : ''}>${escapeHtml(f.label)}</option>`).join('')}
+        </select>` : ''}
         ${!presetSupplierId ? `
         <label>المورد</label>
         <select id="ret-supplier-filter">
@@ -431,6 +442,12 @@ export async function renderReturnsList(container, filterKey, presetSupplierId =
 
   container.querySelectorAll('tr.row-link').forEach(row => row.addEventListener('click', () => navigate(`/returns/${row.dataset.id}`)));
   qs('#ret-search', container).addEventListener('input', debounce((e) => { listState.query = e.target.value; listState.page = 1; renderReturnsList(container, filterKey, presetSupplierId); }, 200));
+  // Switching status is a real navigation, so it keeps its own history
+  // entry and the sidebar highlight stays in step with the screen.
+  qs('#ret-status-filter', container)?.addEventListener('change', (e) => {
+    listState.page = 1;
+    navigate(`/returns/${e.target.value}`);
+  });
   const sf = qs('#ret-supplier-filter', container);
   if (sf) sf.addEventListener('change', () => { listState.supplierFilter = sf.value; listState.page = 1; renderReturnsList(container, filterKey, presetSupplierId); });
   qs('#ret-date-from', container).addEventListener('change', (e) => { listState.dateFrom = e.target.value; listState.page = 1; renderReturnsList(container, filterKey, presetSupplierId); });
@@ -830,9 +847,14 @@ function wireDetailEvents(container, ret, lines, supplier) {
     await Promise.all(lineSavers.map(saver => saver.settle()));
     if (notesSaver) await notesSaver.settle();
     // Then export what the return actually holds now, not the copy this
-    // screen was drawn with (see collectExportLines).
-    const current = await collectExportLines(ret.id, ret.supplierId);
-    await openExportOptionsModal(ret, current, supplier);
+    // screen was drawn with (see collectExportLines). The return record
+    // itself is re-read too: the report carries its آخر تعديل date, which
+    // the edit that just happened has moved.
+    const [freshRet, current] = await Promise.all([
+      getById('returns', ret.id),
+      collectExportLines(ret.id, ret.supplierId),
+    ]);
+    await openExportOptionsModal(freshRet || ret, current, supplier);
   }));
 
   qs('#btn-send', container)?.addEventListener('click', guarded(async () => {

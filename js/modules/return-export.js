@@ -25,6 +25,16 @@ const COLUMNS = [
   { key: 'total', label: 'الإجمالي' },
 ];
 
+// Which date a report should carry. A draft is still being worked on, so
+// the useful date is when it last changed. Once it has gone to the
+// supplier, that is the date both sides refer to — and "آخر تعديل" on a
+// sent return would only ever mean something internal.
+function reportDate(ret) {
+  return ret.sentAt
+    ? { label: 'تاريخ الإرسال', value: fmtDate(ret.sentAt, true) }
+    : { label: 'آخر تعديل', value: fmtDate(ret.updatedAt || ret.createdAt, true) };
+}
+
 function cellValue(line, key) {
   switch (key) {
     case 'supplierName': return line.supplierItemName;
@@ -121,7 +131,7 @@ export async function exportToExcel(ret, supplier, lines, keys) {
     ['تقرير مرتجعة'],
     ['رقم المرتجعة', ret.returnNumber],
     ['المورد', supplier?.name || '—'],
-    ['التاريخ', fmtDate(ret.createdAt, true)],
+    [reportDate(ret).label, reportDate(ret).value],
     ['الحالة', ret.status === 'closed' ? 'مغلقة' : ret.status === 'sent' ? 'تم الإرسال' : 'مسودة'],
     [],
     cols.map(c => c.label),
@@ -154,7 +164,7 @@ const CANVAS_COLUMNS = {
   total: { label: 'الإجمالي' },
 };
 
-function reportSpec(shopName, ret, supplier, lines, keys) {
+export function buildReturnReportSpec(shopName, ret, supplier, lines, keys) {
   const columns = Object.entries(CANVAS_COLUMNS)
     .filter(([key]) => keys.includes(key))
     .map(([key, def]) => ({ key, ...def }));
@@ -168,7 +178,7 @@ function reportSpec(shopName, ret, supplier, lines, keys) {
     width: 640 + Math.max(0, columns.length - 5) * 110,
     title: `مرتجعة ${ret.returnNumber}`,
     subtitle: supplier?.name || '—',
-    dateLabel: fmtDate(ret.createdAt, true),
+    dateLabel: `${reportDate(ret).label}: ${reportDate(ret).value}`,
     columns,
     rows: lines.map(l => ({
       supplierName: l.supplierItemName,
@@ -184,7 +194,7 @@ function reportSpec(shopName, ret, supplier, lines, keys) {
 }
 
 async function renderReportToBlob(shopName, ret, supplier, lines, keys) {
-  const canvas = await drawReport(reportSpec(shopName, ret, supplier, lines, keys));
+  const canvas = await drawReport(buildReturnReportSpec(shopName, ret, supplier, lines, keys));
   return canvasToBlob(canvas);
 }
 
@@ -333,7 +343,8 @@ export async function openThermalPrintView(ret, supplier, lines, keys) {
       <div class="tp-center">
         <div class="tp-title">مرتجعة موردين</div>
         <div class="tp-sub">${escapeHtml(supplier?.name || '—')}</div>
-        <div class="tp-sub">${escapeHtml(ret.returnNumber)} · ${fmtDate(ret.createdAt, true)}</div>
+        <div class="tp-sub">${escapeHtml(ret.returnNumber)}</div>
+        <div class="tp-sub">${escapeHtml(reportDate(ret).label)}: ${reportDate(ret).value}</div>
       </div>
       <div class="tp-divider"></div>
       ${rowsHtml}
