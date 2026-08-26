@@ -1,5 +1,9 @@
 # سجل الإصدارات
 
+## 1.17.2 — 2026-08-26
+
+- Add a browser smoke suite and gate the version bump on it
+
 ## 1.17.1 — 2026-08-25
 
 - تحديث تلقائي.
