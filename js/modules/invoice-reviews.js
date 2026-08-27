@@ -50,6 +50,42 @@ function bulkPriceLabel(items, units) {
   return labels.length === 1 ? `سعر ${withAl(labels[0])}` : 'سعر الوحدة';
 }
 
+// The columns an export can carry, and the one place that says what each
+// holds. The return export has had this since the beginning; the review
+// had a single barcode tick, so there was no way to leave the cost out of
+// a copy for a driver — or to put the ERP name in at all.
+export const REVIEW_COLUMNS = [
+  { key: 'itemName', label: 'اسم الصنف عند المورد', flex: true, strong: true },
+  { key: 'erpName', label: 'صنف النظام ERP', flex: true },
+  { key: 'barcode', label: 'الباركود' },
+  { key: 'qty', label: 'الكمية' },
+  { key: 'unit', label: 'الوحدة' },
+  { key: 'actualQty', label: 'الكمية الفعلية' },
+  { key: 'price', label: 'سعر الوحدة' },
+  { key: 'piecePrice', label: 'سعر القطعة' },
+  { key: 'total', label: 'الإجمالي' },
+];
+
+export const DEFAULT_REVIEW_KEYS = REVIEW_COLUMNS.map(c => c.key);
+
+function reviewCellValue(item, computed, key) {
+  switch (key) {
+    case 'itemName': return item.itemName || '—';
+    case 'erpName': return item.erpItemName || 'غير مرتبط';
+    case 'barcode': return item.erpBarcode || '—';
+    case 'qty': return fmtInt(computed.qty);
+    case 'unit': return computed.unit.label;
+    case 'actualQty': return `${fmtInt(computed.actualQty)} قطعة`;
+    // A line entered by the piece has no bulk price — the dash goes here,
+    // not on the piece price, which is always meaningful and is the number
+    // being checked against ERP.
+    case 'price': return computed.multiplier === 1 ? '—' : fmtMoney(computed.price);
+    case 'piecePrice': return fmtMoney(computed.piecePrice);
+    case 'total': return fmtMoney(computed.total);
+    default: return '';
+  }
+}
+
 function computeLine(item, units) {
   const unit = unitByKey(units, item.unitKey);
   const multiplier = Number(unit?.multiplier) || 1;
@@ -146,8 +182,11 @@ export async function listReviews() {
 // rather than reusing the copy the screen was drawn with.
 export async function loadReviewItemsWithBarcodes(reviewId) {
   const [rows, erpItems] = await Promise.all([getReviewItems(reviewId), getAll('erpItems')]);
-  const barcodeById = Object.fromEntries(erpItems.map(i => [i.id, i.barcode || '']));
-  return rows.map(i => ({ ...i, erpBarcode: i.erpItemId ? (barcodeById[i.erpItemId] || '') : '' }));
+  const byId = Object.fromEntries(erpItems.map(i => [i.id, i]));
+  return rows.map(i => {
+    const erp = i.erpItemId ? byId[i.erpItemId] : null;
+    return { ...i, erpBarcode: erp?.barcode || '', erpItemName: erp?.name || '' };
+  });
 }
 
 export async function getReviewItems(reviewId) {
@@ -494,10 +533,17 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
 
     <div class="card card-pad">
       <div class="section-title">تصدير</div>
-      <label class="export-col-toggle">
-        <input type="checkbox" id="exp-barcode" checked> إضافة عمود الباركود
-      </label>
-      <div class="hint">شيل العلامة لو مش عايز الباركود في النسخة اللي هتطلعها.</div>
+      <div class="field">
+        <label>الأعمدة الظاهرة في التصدير</label>
+        <div id="export-columns">
+          ${REVIEW_COLUMNS.map(c => `
+            <label class="export-col-toggle">
+              <input type="checkbox" class="col-toggle" value="${c.key}" checked> ${escapeHtml(c.key === 'price' ? bulkPriceLabel(items, units) : c.label)}
+            </label>
+          `).join('')}
+        </div>
+        <div class="hint">أخفِ أي عمود (مثل السعر) قبل تصدير نسخة تُشارك مع طرف خارجي.</div>
+      </div>
       <div class="flex gap-8" style="flex-wrap:wrap;margin-top:12px;">
         <button class="btn btn-ghost" id="btn-copy">📋 نسخ كنص</button>
         <button class="btn btn-ghost" id="btn-img">🖼 تنزيل كصورة</button>
@@ -808,7 +854,7 @@ function wireDetailEvents(container, review, items, units, suppliers) {
     qs('#add-item-name', container)?.focus();
   }, { busyLabel: 'جارِ الإضافة...' }));
 
-  const withBarcode = () => ({ showBarcode: qs('#exp-barcode', container)?.checked !== false });
+  const selectedKeys = () => qsa('.col-toggle', container).filter(cb => cb.checked).map(cb => cb.value);
 
   // Every export goes through here: settle whatever is mid-save (clicking
   // the button blurs the field being typed into, which starts one), then
@@ -820,13 +866,15 @@ function wireDetailEvents(container, review, items, units, suppliers) {
       loadReviewItemsWithBarcodes(review.id),
       getById('invoiceReviews', review.id),
     ]);
-    await run(freshReview || review, current, withBarcode());
+    const keys = selectedKeys();
+    if (!keys.length) { toast('اختر عمودًا واحدًا على الأقل', 'error'); return; }
+    await run(freshReview || review, current, keys);
   }
 
-  qs('#btn-copy', container).addEventListener('click', guarded(() => exportWith((rev, rows, opts) => copyReviewText(rev, rows, units, suppliers, opts))));
-  qs('#btn-img', container).addEventListener('click', guarded(() => exportWith((rev, rows, opts) => downloadReviewImage(rev, rows, units, suppliers, opts))));
-  qs('#btn-whatsapp', container).addEventListener('click', guarded(() => exportWith((rev, rows, opts) => shareReviewImage(rev, rows, units, suppliers, opts))));
-  qs('#btn-print', container).addEventListener('click', guarded(() => exportWith((rev, rows, opts) => printReview(rev, rows, units, suppliers, opts))));
+  qs('#btn-copy', container).addEventListener('click', guarded(() => exportWith((rev, rows, keys) => copyReviewText(rev, rows, units, suppliers, keys))));
+  qs('#btn-img', container).addEventListener('click', guarded(() => exportWith((rev, rows, keys) => downloadReviewImage(rev, rows, units, suppliers, keys))));
+  qs('#btn-whatsapp', container).addEventListener('click', guarded(() => exportWith((rev, rows, keys) => shareReviewImage(rev, rows, units, suppliers, keys))));
+  qs('#btn-print', container).addEventListener('click', guarded(() => exportWith((rev, rows, keys) => printReview(rev, rows, units, suppliers, keys))));
 }
 
 // The bulk price column is named after the unit the invoice actually uses,
@@ -955,7 +1003,7 @@ function reviewReportDate(review) {
     : { label: 'آخر تعديل', value: fmtDate(review.updatedAt || review.createdAt, true) };
 }
 
-function reviewSummaryText(review, items, units, suppliers, { showBarcode = false } = {}) {
+function reviewSummaryText(review, items, units, suppliers, keys = DEFAULT_REVIEW_KEYS) {
   const supplierName = review.supplierId ? (suppliers.find(s => s.id === review.supplierId)?.name || review.supplierName) : (review.supplierName || '—');
   const lines = [`مراجعة فاتورة ${review.reviewNumber}`, `المورد: ${supplierName}`];
   if (review.invoiceNumber) lines.push(`رقم الفاتورة: ${review.invoiceNumber}`);
@@ -964,22 +1012,30 @@ function reviewSummaryText(review, items, units, suppliers, { showBarcode = fals
   lines.push('');
   items.forEach((i, idx) => {
     const c = computeLine(i, units);
-    const namePart = i.itemName ? `${i.itemName} — ` : '';
-    const barcodePart = showBarcode ? `باركود: ${i.erpBarcode || '—'} | ` : '';
-    // The bulk price only exists for a line entered in a bulk unit; the
-    // piece price is always there, because that is the number being checked.
-    const bulkPart = c.multiplier === 1 ? '' : `سعر ${withAl(c.unit.label)}: ${fmtMoney(c.price)} | `;
-    lines.push(`${idx + 1}. ${namePart}${barcodePart}الكمية: ${fmtInt(c.qty)} ${c.unit.label} | الكمية الفعلية: ${fmtInt(c.actualQty)} قطعة | ${bulkPart}سعر القطعة: ${fmtMoney(c.piecePrice)} | الإجمالي: ${fmtMoney(c.total)}`);
+    // The name leads the line; everything else is a labelled part, and a
+    // column left out of the export is left out here too.
+    const head = keys.includes('itemName') && i.itemName ? `${i.itemName} — ` : '';
+    const parts = REVIEW_COLUMNS
+      .filter(col => col.key !== 'itemName' && keys.includes(col.key))
+      // A line entered by the piece has no bulk price to report.
+      .filter(col => !(col.key === 'price' && c.multiplier === 1))
+      .map(col => {
+        const label = col.key === 'price' ? `سعر ${withAl(c.unit.label)}` : col.label;
+        return `${label}: ${reviewCellValue(i, c, col.key)}`;
+      });
+    lines.push(`${idx + 1}. ${head}${parts.join(' | ')}`);
   });
   const totalQty = items.reduce((s, i) => s + computeLine(i, units).actualQty, 0);
   const totalValue = items.reduce((s, i) => s + computeLine(i, units).total, 0);
-  lines.push('', `إجمالي الكمية: ${fmtInt(totalQty)} قطعة`, `إجمالي الفاتورة: ${fmtMoney(totalValue)}`);
+  lines.push('');
+  if (keys.includes('qty') || keys.includes('actualQty')) lines.push(`إجمالي الكمية: ${fmtInt(totalQty)} قطعة`);
+  if (keys.includes('total')) lines.push(`إجمالي الفاتورة: ${fmtMoney(totalValue)}`);
   return lines.join('\n');
 }
 
-async function copyReviewText(review, items, units, suppliers, options) {
+async function copyReviewText(review, items, units, suppliers, keys) {
   try {
-    await navigator.clipboard.writeText(reviewSummaryText(review, items, units, suppliers, options));
+    await navigator.clipboard.writeText(reviewSummaryText(review, items, units, suppliers, keys));
     toast('تم نسخ المراجعة', 'success');
   } catch (err) {
     console.error(err);
@@ -989,55 +1045,42 @@ async function copyReviewText(review, items, units, suppliers, options) {
 
 // The report's shape, separated from drawing it: what the columns are and
 // what each row holds. Exported so it can be asserted on directly.
-export function buildReviewReportSpec(review, items, units, suppliers, { showBarcode = true } = {}) {
-  const supplierName = review.supplierId ? (suppliers.find(s => s.id === review.supplierId)?.name || review.supplierName) : (review.supplierName || '—');
+export function buildReviewReportSpec(review, items, units, suppliers, keys = DEFAULT_REVIEW_KEYS) {
+  const supplierName = review.supplierId
+    ? (suppliers.find(s => s.id === review.supplierId)?.name || review.supplierName)
+    : (review.supplierName || '—');
   const totalQty = items.reduce((s, i) => s + computeLine(i, units).actualQty, 0);
   const totalValue = items.reduce((s, i) => s + computeLine(i, units).total, 0);
+  const columns = REVIEW_COLUMNS.filter(c => keys.includes(c.key)).map(c => ({
+    ...c,
+    // The bulk price column is named after the unit the invoice uses.
+    label: c.key === 'price' ? bulkPriceLabel(items, units) : c.label,
+  }));
 
   return {
-    width: showBarcode ? 860 : 760, // room for the extra columns
+    // Every extra column needs room, the same way the return report widens.
+    width: 520 + columns.length * 60,
     title: `مراجعة فاتورة ${review.reviewNumber}`,
     subtitle: `${supplierName}${review.invoiceNumber ? ` · فاتورة رقم ${review.invoiceNumber}` : ''}`,
     dateLabel: `${reviewReportDate(review).label}: ${reviewReportDate(review).value}`,
-    columns: [
-      { key: 'itemName', label: 'الصنف', flex: true, strong: true },
-      ...(showBarcode ? [{ key: 'barcode', label: 'الباركود' }] : []),
-      { key: 'qty', label: 'الكمية' },
-      { key: 'unit', label: 'الوحدة' },
-      { key: 'actualQty', label: 'الكمية الفعلية' },
-      { key: 'price', label: bulkPriceLabel(items, units) },
-      { key: 'piecePrice', label: 'سعر القطعة' },
-      { key: 'total', label: 'الإجمالي' },
-    ],
+    columns,
     rows: items.map(i => {
       const c = computeLine(i, units);
-      return {
-        itemName: i.itemName || '—',
-        barcode: i.erpBarcode || '—',
-        qty: fmtInt(c.qty),
-        unit: c.unit.label,
-        actualQty: `${fmtInt(c.actualQty)} قطعة`,
-        // A line entered by the piece has no bulk price — the dash goes
-        // here, not on the piece price, which is always meaningful and is
-        // the number being checked against ERP.
-        price: c.multiplier === 1 ? '—' : fmtMoney(c.price),
-        piecePrice: fmtMoney(c.piecePrice),
-        total: fmtMoney(c.total),
-      };
+      return Object.fromEntries(columns.map(col => [col.key, reviewCellValue(i, c, col.key)]));
     }),
-    footerRight: `إجمالي الكمية: ${fmtInt(totalQty)} قطعة`,
-    footerLeft: `الإجمالي: ${fmtMoney(totalValue)} جنيه`,
+    footerRight: keys.includes('actualQty') || keys.includes('qty') ? `إجمالي الكمية: ${fmtInt(totalQty)} قطعة` : '',
+    footerLeft: keys.includes('total') ? `الإجمالي: ${fmtMoney(totalValue)} جنيه` : '',
   };
 }
 
-async function renderReviewToBlob(review, items, units, suppliers, options) {
-  const canvas = await drawReport(buildReviewReportSpec(review, items, units, suppliers, options));
+async function renderReviewToBlob(review, items, units, suppliers, keys) {
+  const canvas = await drawReport(buildReviewReportSpec(review, items, units, suppliers, keys));
   return canvasToBlob(canvas);
 }
 
-async function downloadReviewImage(review, items, units, suppliers, options) {
+async function downloadReviewImage(review, items, units, suppliers, keys) {
   try {
-    const blob = await renderReviewToBlob(review, items, units, suppliers, options);
+    const blob = await renderReviewToBlob(review, items, units, suppliers, keys);
     if (!blob) { toast('تعذّر إنشاء الصورة', 'error'); return; }
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1051,9 +1094,9 @@ async function downloadReviewImage(review, items, units, suppliers, options) {
   }
 }
 
-async function shareReviewImage(review, items, units, suppliers, options) {
+async function shareReviewImage(review, items, units, suppliers, keys) {
   try {
-    const blob = await renderReviewToBlob(review, items, units, suppliers, options);
+    const blob = await renderReviewToBlob(review, items, units, suppliers, keys);
     if (!blob) { toast('تعذّر إنشاء الصورة', 'error'); return; }
     const fileName = `${review.reviewNumber}.png`;
     const file = new File([blob], fileName, { type: 'image/png' });
@@ -1079,13 +1122,14 @@ async function shareReviewImage(review, items, units, suppliers, options) {
 // The printed review used to be the copy-to-clipboard text poured onto a
 // page — readable, but nothing like the return receipt coming off the same
 // roll. It is the same receipt now, carrying invoice figures.
-export function buildReviewReceipt(review, items, units, suppliers, { showBarcode = true, shopName = '' } = {}) {
+export function buildReviewReceipt(review, items, units, suppliers, keys = DEFAULT_REVIEW_KEYS, shopName = '') {
   const supplierName = review.supplierId
     ? (suppliers.find(s => s.id === review.supplierId)?.name || review.supplierName)
     : (review.supplierName || '—');
   const totalQty = items.reduce((s, i) => s + computeLine(i, units).actualQty, 0);
   const totalValue = items.reduce((s, i) => s + computeLine(i, units).total, 0);
   const date = reviewReportDate(review);
+  const on = (key) => keys.includes(key);
 
   return buildThermalReceipt({
     shopName,
@@ -1100,28 +1144,38 @@ export function buildReviewReceipt(review, items, units, suppliers, { showBarcod
     ],
     items: items.map(i => {
       const c = computeLine(i, units);
-      const bulk = c.multiplier === 1 ? '' : `سعر ${withAl(c.unit.label)}: ${fmtMoney(c.price)}`;
+      // The name at the top, the ERP name under it — the same shape the
+      // return receipt uses, and the reason the ERP name was missing here.
+      const name = on('itemName') ? (i.itemName || '—') : (i.erpItemName || 'غير مرتبط');
+      const erpSub = (on('itemName') && on('erpName')) ? (i.erpItemName || 'غير مرتبط') : '';
       // A bulk line's quantity is worth spelling out in pieces beside it —
       // that is the number being checked against what actually arrived.
-      const qtyText = c.multiplier === 1
-        ? `الكمية: ${fmtInt(c.qty)} ${c.unit.label}`
-        : `الكمية: ${fmtInt(c.qty)} ${c.unit.label} = ${fmtInt(c.actualQty)} قطعة`;
+      const qtyText = !on('qty') ? ''
+        : (c.multiplier === 1 || !on('actualQty')
+          ? `الكمية: ${fmtInt(c.qty)} ${c.unit.label}`
+          : `الكمية: ${fmtInt(c.qty)} ${c.unit.label} = ${fmtInt(c.actualQty)} قطعة`);
       return {
-        name: i.itemName || '—',
-        subs: [showBarcode && i.erpBarcode ? `باركود: ${i.erpBarcode}` : ''],
+        name,
+        subs: [erpSub, on('barcode') && i.erpBarcode ? `باركود: ${i.erpBarcode}` : ''],
         rows: [
-          [qtyText, bulk],
-          [`سعر القطعة: ${fmtMoney(c.piecePrice)}`, `الإجمالي: ${fmtMoney(c.total)}`],
+          [qtyText, on('price') && c.multiplier !== 1 ? `سعر ${withAl(c.unit.label)}: ${fmtMoney(c.price)}` : ''],
+          [
+            on('piecePrice') ? `سعر القطعة: ${fmtMoney(c.piecePrice)}` : '',
+            on('total') ? `الإجمالي: ${fmtMoney(c.total)}` : '',
+          ],
         ],
       };
     }),
-    grand: [`الكمية: ${fmtInt(totalQty)} قطعة`, `الإجمالي: ${fmtMoney(totalValue)}`],
+    grand: [
+      (on('qty') || on('actualQty')) ? `الكمية: ${fmtInt(totalQty)} قطعة` : '',
+      on('total') ? `الإجمالي: ${fmtMoney(totalValue)}` : '',
+    ],
   });
 }
 
-async function printReview(review, items, units, suppliers, options) {
+async function printReview(review, items, units, suppliers, keys) {
   const shopName = await getSetting('shopName', '');
-  const html = buildReviewReceipt(review, items, units, suppliers, { ...options, shopName });
+  const html = buildReviewReceipt(review, items, units, suppliers, keys, shopName);
   try {
     await printHtmlDocument(html);
   } catch (err) {
