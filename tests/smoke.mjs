@@ -384,6 +384,49 @@ try {
         asPieces.piece === '4.17' && asPieces.unitPrice === '4.1667' && asPieces.actual === '2 قطعة',
         JSON.stringify(asPieces));
 
+  // ---------- the printed review is the same receipt as the return ----------
+  const receipt = await page.evaluate(async () => {
+    const { buildReviewReceipt } = await import('/js/modules/invoice-reviews.js');
+    const units = [{ key: 'piece', label: 'قطعة', multiplier: 1 }, { key: 'dozen', label: 'دستة', multiplier: 12 }];
+    const review = {
+      reviewNumber: 'INV-2026-00002', supplierId: 's1', supplierName: 'مورد الأمل',
+      invoiceNumber: 'F2', createdAt: '2026-08-01T08:00:00.000Z', updatedAt: '2026-08-05T08:00:00.000Z',
+    };
+    const rows = [{ itemName: 'كريب سادة', erpBarcode: '62000001', qty: 2, unitKey: 'dozen', price: 50 }];
+    const html = buildReviewReceipt(review, rows, units, [{ id: 's1', name: 'مورد الأمل' }], { showBarcode: true, shopName: 'محل الاختبار' });
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return {
+      hasStyle: /80mm auto/.test(html),
+      author: doc.querySelector('.tp-letterhead td:last-child')?.textContent.trim(),
+      shop: doc.querySelector('.tp-shop')?.textContent.trim(),
+      tagline: doc.querySelector('.tp-tagline')?.textContent.trim(),
+      title: doc.querySelector('.tp-title')?.textContent.trim(),
+      subs: Array.from(doc.querySelectorAll('.tp-sub')).map(e => e.textContent.trim()),
+      itemName: doc.querySelector('.tp-item-name')?.textContent.trim(),
+      itemSubs: Array.from(doc.querySelectorAll('.tp-item-sub')).map(e => e.textContent.trim()),
+      cells: Array.from(doc.querySelectorAll('.tp-item .tp-row td')).map(e => e.textContent.trim()),
+      grand: Array.from(doc.querySelectorAll('.tp-grand-row td')).map(e => e.textContent.trim()),
+    };
+  });
+  check('the printed review uses the receipt layout, not plain text',
+        receipt.hasStyle && receipt.title === 'مراجعة فاتورة' && !!receipt.itemName,
+        JSON.stringify({ title: receipt.title, item: receipt.itemName }));
+  check('it carries the shop, the author and its own tagline',
+        receipt.shop === 'محل الاختبار'
+        && receipt.author === 'عبدالله <Abo-Lilah>'
+        && receipt.tagline === 'نظام إدارة المخزون ومراجعة الفواتير',
+        JSON.stringify({ shop: receipt.shop, author: receipt.author, tagline: receipt.tagline }));
+  check('and the invoice figures, with a dozen line spelled out in pieces',
+        receipt.subs.some(s => s.includes('INV-2026-00002'))
+        && receipt.subs.some(s => s.includes('فاتورة رقم: F2'))
+        && receipt.subs.some(s => s.startsWith('آخر تعديل'))
+        && receipt.itemSubs.includes('باركود: 62000001')
+        && receipt.cells.includes('الكمية: 2 دستة = 24 قطعة')
+        && receipt.cells.includes('سعر الدستة: 50.00')
+        && receipt.cells.includes('سعر القطعة: 4.17')
+        && receipt.grand.join(' ').includes('24 قطعة'),
+        JSON.stringify({ subs: receipt.subs, cells: receipt.cells, grand: receipt.grand }));
+
   // ---------- which price column carries the dash ----------
   const spec = await page.evaluate(async () => {
     const { buildReviewReportSpec } = await import('/js/modules/invoice-reviews.js');

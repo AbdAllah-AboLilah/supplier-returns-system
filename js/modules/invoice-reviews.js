@@ -12,7 +12,7 @@
 // two collections (invoiceReviews, invoiceReviewItems) that no other
 // module touches.
 // =========================================================
-import { getAll, getById, put, remove, getByIndex, removeWhere, nextSequence } from '../core/db.js';
+import { getAll, getById, put, remove, getByIndex, removeWhere, nextSequence, getSetting } from '../core/db.js';
 import { uid, nowIso, fmtMoney, fmtInt, fmtDate, escapeHtml, fuzzyIncludes, debounce,
          openModal, confirmDialog, toast, paginate, renderPagination, qs, qsa,
          renderPreservingFocus, guarded, closeOnOutsideClick, printHtmlDocument, submitOnce,
@@ -23,6 +23,7 @@ import { openSupplierForm } from './suppliers.js';
 import { searchSupplierItems, getOrCreateSupplierItem, updateCost } from './supplier-items.js';
 import { getUnits, saveUnits, unitByKey } from '../core/units.js';
 import { drawReport, canvasToBlob } from './report-canvas.js';
+import { buildThermalReceipt } from './thermal-receipt.js';
 
 async function generateReviewNumber() {
   const year = new Date().getFullYear();
@@ -1075,13 +1076,52 @@ async function shareReviewImage(review, items, units, suppliers, options) {
   }
 }
 
+// The printed review used to be the copy-to-clipboard text poured onto a
+// page — readable, but nothing like the return receipt coming off the same
+// roll. It is the same receipt now, carrying invoice figures.
+export function buildReviewReceipt(review, items, units, suppliers, { showBarcode = true, shopName = '' } = {}) {
+  const supplierName = review.supplierId
+    ? (suppliers.find(s => s.id === review.supplierId)?.name || review.supplierName)
+    : (review.supplierName || '—');
+  const totalQty = items.reduce((s, i) => s + computeLine(i, units).actualQty, 0);
+  const totalValue = items.reduce((s, i) => s + computeLine(i, units).total, 0);
+  const date = reviewReportDate(review);
+
+  return buildThermalReceipt({
+    shopName,
+    tagline: 'نظام إدارة المخزون ومراجعة الفواتير',
+    title: 'مراجعة فاتورة',
+    documentTitle: review.reviewNumber,
+    subtitles: [
+      supplierName,
+      review.reviewNumber,
+      review.invoiceNumber ? `فاتورة رقم: ${review.invoiceNumber}` : '',
+      `${date.label}: ${date.value}`,
+    ],
+    items: items.map(i => {
+      const c = computeLine(i, units);
+      const bulk = c.multiplier === 1 ? '' : `سعر ${withAl(c.unit.label)}: ${fmtMoney(c.price)}`;
+      // A bulk line's quantity is worth spelling out in pieces beside it —
+      // that is the number being checked against what actually arrived.
+      const qtyText = c.multiplier === 1
+        ? `الكمية: ${fmtInt(c.qty)} ${c.unit.label}`
+        : `الكمية: ${fmtInt(c.qty)} ${c.unit.label} = ${fmtInt(c.actualQty)} قطعة`;
+      return {
+        name: i.itemName || '—',
+        subs: [showBarcode && i.erpBarcode ? `باركود: ${i.erpBarcode}` : ''],
+        rows: [
+          [qtyText, bulk],
+          [`سعر القطعة: ${fmtMoney(c.piecePrice)}`, `الإجمالي: ${fmtMoney(c.total)}`],
+        ],
+      };
+    }),
+    grand: [`الكمية: ${fmtInt(totalQty)} قطعة`, `الإجمالي: ${fmtMoney(totalValue)}`],
+  });
+}
+
 async function printReview(review, items, units, suppliers, options) {
-  const text = reviewSummaryText(review, items, units, suppliers, options);
-  const html = `
-    <!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8"><title>${escapeHtml(review.reviewNumber)}</title>
-    <style>body{font-family:Tahoma,Arial,sans-serif;padding:16px;white-space:pre-wrap;font-size:14px;line-height:1.6;}</style>
-    </head><body>${escapeHtml(text)}</body></html>
-  `;
+  const shopName = await getSetting('shopName', '');
+  const html = buildReviewReceipt(review, items, units, suppliers, { ...options, shopName });
   try {
     await printHtmlDocument(html);
   } catch (err) {

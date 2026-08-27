@@ -15,6 +15,7 @@
 import { fmtMoney, fmtInt, fmtDate, escapeHtml, openModal, toast, qs, qsa, printHtmlDocument } from '../core/utils.js';
 import { getSetting, getAll } from '../core/db.js';
 import { drawReport, canvasToBlob } from './report-canvas.js';
+import { buildThermalReceipt } from './thermal-receipt.js';
 
 const COLUMNS = [
   { key: 'supplierName', label: 'اسم الصنف عند المورد' },
@@ -267,15 +268,8 @@ export async function openThermalPrintView(ret, supplier, lines, keys) {
   const shopName = await getSetting('shopName', '');
   const total = lines.reduce((s, l) => s + (Number(l.total) || 0), 0);
   const totalQty = lines.reduce((s, l) => s + (Number(l.qty) || 0), 0);
-  // Kept deliberately simple: no flexbox, no fixed mm widths, no
-  // margin set in two places at once. Thermal receipt drivers vary a
-  // lot in what they render correctly — a fluid width with a single
-  // padding source and small *tables* (not flex) for the value rows
-  // are the combination least likely to clip or drop text. Numbers
-  // are bold throughout — thin/regular strokes print faint on most
-  // thermal heads. If your paper is 58mm instead of 80mm, change the
-  // "size" line below to "58mm auto".
-  const rowsHtml = lines.map(l => {
+
+  const items = lines.map(l => {
     const showSupplierName = keys.includes('supplierName');
     const showErpName = keys.includes('erpName');
     // Always show *something* as the title — supplier name by default,
@@ -284,77 +278,33 @@ export async function openThermalPrintView(ret, supplier, lines, keys) {
     // If both are checked, the ERP name becomes a small line under the title.
     const subtitle = (showSupplierName && showErpName) ? (l.erpItemName || 'غير مرتبط') : null;
     const barcode = keys.includes('barcode') ? (l.erpBarcode || '') : '';
-    return `
-    <div class="tp-item">
-      <div class="tp-item-name">${escapeHtml(title)}</div>
-      ${subtitle ? `<div class="tp-item-sub">${escapeHtml(subtitle)}</div>` : ''}
-      ${barcode ? `<div class="tp-item-sub">باركود: ${escapeHtml(barcode)}</div>` : ''}
-      ${(keys.includes('qty') || keys.includes('cost') || keys.includes('total')) ? `
-      <table class="tp-row"><tr>
-        ${keys.includes('qty') ? `<td>الكمية: ${fmtInt(l.qty)}</td>` : ''}
-        ${keys.includes('cost') ? `<td>السعر: ${fmtMoney(l.unitCost)}</td>` : ''}
-        ${keys.includes('total') ? `<td>الإجمالي: ${fmtMoney(l.total)}</td>` : ''}
-      </tr></table>` : ''}
-    </div>
-  `;
-  }).join('');
+    return {
+      name: title,
+      subs: [subtitle, barcode ? `باركود: ${barcode}` : ''],
+      rows: [[
+        keys.includes('qty') ? `الكمية: ${fmtInt(l.qty)}` : '',
+        keys.includes('cost') ? `السعر: ${fmtMoney(l.unitCost)}` : '',
+        keys.includes('total') ? `الإجمالي: ${fmtMoney(l.total)}` : '',
+      ]],
+    };
+  });
 
-  const html = `
-    <!DOCTYPE html>
-    <html lang="ar" dir="rtl"><head><meta charset="UTF-8">
-    <title>${escapeHtml(ret.returnNumber)}</title>
-    <style>
-      @page { size: 80mm auto; margin: 0; }
-      * { box-sizing: border-box; }
-      html, body { margin: 0; padding: 0; }
-      body {
-        font-family: 'Tahoma', 'Arial', sans-serif;
-        width: 100%;
-        padding: 2mm 3mm;
-        color: #000;
-        font-size: 12px;
-        line-height: 1.15;
-      }
-      .tp-center { text-align: center; }
-      .tp-letterhead { width: 100%; border-collapse: collapse; table-layout: fixed; }
-      .tp-letterhead td { vertical-align: top; font-size: 10px; font-weight: 700; }
-      .tp-letterhead td:first-child { text-align: right; }
-      .tp-letterhead td:last-child { text-align: left; }
-      .tp-shop { font-size: 13px; font-weight: bold; }
-      .tp-tagline { font-size: 9px; font-weight: 700; white-space: nowrap; margin: 1px 0 2px; }
-      .tp-title { font-size: 15px; font-weight: bold; margin-bottom: 0; }
-      .tp-sub { font-size: 11px; font-weight: 600; color:#000; }
-      .tp-divider { border-top: 1px dashed #000; margin: 3px 0; }
-      .tp-item { padding: 2px 0; border-bottom: 1px dashed #000; }
-      .tp-item-name { font-weight: bold; word-break: break-word; overflow-wrap: break-word; }
-      .tp-item-sub { font-size: 11px; font-weight: bold; color: #000; margin-top: 1px; }
-      .tp-row { width: 100%; border-collapse: collapse; table-layout: fixed; margin-top: 1px; }
-      .tp-row td { font-size: 12px; font-weight: 700; padding: 0 1px; text-align: center; }
-      .tp-grand-row { width: 100%; border-collapse: collapse; table-layout: fixed; margin-top: 5px; padding-top: 4px; border-top: 1px solid #000; }
-      .tp-grand-row td { font-size: 14px; font-weight: 900; text-align: center; padding: 0; }
-    </style></head>
-    <body>
-      <table class="tp-letterhead"><tr>
-        <td>${shopName ? `<div class="tp-shop">${escapeHtml(shopName)}</div>` : ''}</td>
-        <td>عبدالله &lt;Abo-Lilah&gt;</td>
-      </tr></table>
-      <div class="tp-tagline">نظام إدارة المخزون والمرتجعات</div>
-      <div class="tp-divider"></div>
-      <div class="tp-center">
-        <div class="tp-title">مرتجعة موردين</div>
-        <div class="tp-sub">${escapeHtml(supplier?.name || '—')}</div>
-        <div class="tp-sub">${escapeHtml(ret.returnNumber)}</div>
-        <div class="tp-sub">${escapeHtml(reportDate(ret).label)}: ${reportDate(ret).value}</div>
-      </div>
-      <div class="tp-divider"></div>
-      ${rowsHtml}
-      ${(keys.includes('qty') || keys.includes('total')) ? `
-      <table class="tp-grand-row"><tr>
-        ${keys.includes('qty') ? `<td>الكمية: ${fmtInt(totalQty)}</td>` : ''}
-        ${keys.includes('total') ? `<td>الإجمالي: ${fmtMoney(total)}</td>` : ''}
-      </tr></table>` : ''}
-    </body></html>
-  `;
+  const html = buildThermalReceipt({
+    shopName,
+    tagline: 'نظام إدارة المخزون والمرتجعات',
+    title: 'مرتجعة موردين',
+    documentTitle: ret.returnNumber,
+    subtitles: [
+      supplier?.name || '—',
+      ret.returnNumber,
+      `${reportDate(ret).label}: ${reportDate(ret).value}`,
+    ],
+    items,
+    grand: [
+      keys.includes('qty') ? `الكمية: ${fmtInt(totalQty)}` : '',
+      keys.includes('total') ? `الإجمالي: ${fmtMoney(total)}` : '',
+    ],
+  });
 
   try {
     await printHtmlDocument(html);
