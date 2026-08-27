@@ -359,7 +359,8 @@ try {
     unitPrice: document.querySelector('.ln-price')?.value,
     piece: document.querySelector('[id^="ln-piece-"]')?.textContent.trim(),
     total: document.querySelector('[id^="ln-total-"]')?.textContent.trim(),
-    barcodeBox: (() => { const b = document.querySelector('#exp-barcode'); return b ? b.checked : null; })(),
+    columnToggles: Array.from(document.querySelectorAll('#export-columns .col-toggle'))
+      .map(cb => ({ key: cb.value, checked: cb.checked })),
   }));
   // Seeded as 2 dozen at 50 per dozen: 50 / 12 = 4.17 a piece, 100 in total.
   // The piece price is the assertion that matters — it must not depend on
@@ -367,7 +368,12 @@ try {
   check('a dozen price is divided into a piece price',
         priced.unit === 'dozen' && priced.unitPrice === '50' && priced.piece === '4.17' && priced.total === '100.00',
         JSON.stringify(priced));
-  check('invoice export offers a barcode column, ticked by default', priced.barcodeBox === true);
+  check('the invoice export can show or hide every column, all on by default',
+        priced.columnToggles.length === 9
+        && priced.columnToggles.every(t => t.checked)
+        && priced.columnToggles.some(t => t.key === 'erpName')
+        && priced.columnToggles.some(t => t.key === 'barcode'),
+        JSON.stringify(priced.columnToggles.map(t => t.key)));
 
   // Switching the unit re-expresses the price rather than reinterpreting
   // it, so what the line costs per piece does not move: 50 a dozen shown
@@ -393,7 +399,7 @@ try {
       invoiceNumber: 'F2', createdAt: '2026-08-01T08:00:00.000Z', updatedAt: '2026-08-05T08:00:00.000Z',
     };
     const rows = [{ itemName: 'كريب سادة', erpBarcode: '62000001', qty: 2, unitKey: 'dozen', price: 50 }];
-    const html = buildReviewReceipt(review, rows, units, [{ id: 's1', name: 'مورد الأمل' }], { showBarcode: true, shopName: 'محل الاختبار' });
+    const html = buildReviewReceipt(review, rows, units, [{ id: 's1', name: 'مورد الأمل' }], undefined, 'محل الاختبار');
     const doc = new DOMParser().parseFromString(html, 'text/html');
     return {
       hasStyle: /80mm auto/.test(html),
@@ -426,6 +432,49 @@ try {
         && receipt.cells.includes('سعر القطعة: 4.17')
         && receipt.grand.join(' ').includes('24 قطعة'),
         JSON.stringify({ subs: receipt.subs, cells: receipt.cells, grand: receipt.grand }));
+
+  // ---------- the ERP name, and leaving a column out ----------
+  // Reported: the ERP name was nowhere in the printed review. It was not
+  // in the data either — only the barcode was resolved from the ERP item.
+  const columnControl = await page.evaluate(async () => {
+    const iv = await import('/js/modules/invoice-reviews.js');
+    const units = [{ key: 'piece', label: 'قطعة', multiplier: 1 }, { key: 'dozen', label: 'دستة', multiplier: 12 }];
+    const review = { reviewNumber: 'INV-3', supplierId: null, supplierName: 'مورد', createdAt: '2026-08-26', updatedAt: '2026-08-26' };
+    const rows = [{ itemName: 'كريب سادة', erpItemName: 'صنف ERP رقم 9', erpBarcode: '62000009', qty: 2, unitKey: 'dozen', price: 50 }];
+
+    const full = iv.buildReviewReceipt(review, rows, units, []);
+    const doc = new DOMParser().parseFromString(full, 'text/html');
+    // Hand a driver a copy with no prices on it.
+    const noPrices = iv.DEFAULT_REVIEW_KEYS.filter(k => !['price', 'piecePrice', 'total'].includes(k));
+    const priceless = new DOMParser().parseFromString(
+      iv.buildReviewReceipt(review, rows, units, [], noPrices), 'text/html');
+    const spec = iv.buildReviewReportSpec(review, rows, units, [], ['itemName', 'erpName', 'qty']);
+    // And the line the item was loaded with, since the name has to be
+    // resolved from the ERP item before anything can print it.
+    const db = await import('/js/core/db.js');
+    const loaded = await iv.loadReviewItemsWithBarcodes('iv1');
+    return {
+      erpSub: Array.from(doc.querySelectorAll('.tp-item-sub')).map(e => e.textContent.trim()),
+      pricelessCells: Array.from(priceless.querySelectorAll('.tp-item .tp-row td, .tp-grand-row td')).map(e => e.textContent.trim()),
+      specColumns: spec.columns.map(c => c.key),
+      specRow: spec.rows[0],
+      loadedName: loaded[0]?.erpItemName,
+      erpExists: !!(await db.getById('erpItems', 'e1')),
+    };
+  });
+  check('the receipt names the ERP item under the supplier name',
+        columnControl.erpSub.includes('صنف ERP رقم 9'), JSON.stringify(columnControl.erpSub));
+  check('a review line carries its ERP name, not just its barcode',
+        columnControl.erpExists && !!columnControl.loadedName, `name=${columnControl.loadedName}`);
+  check('unticking the price columns takes them out of the receipt',
+        !columnControl.pricelessCells.some(c => c.includes('سعر') || c.includes('الإجمالي'))
+        && columnControl.pricelessCells.some(c => c.includes('الكمية')),
+        JSON.stringify(columnControl.pricelessCells));
+  check('and out of the report image',
+        columnControl.specColumns.join(',') === 'itemName,erpName,qty'
+        && columnControl.specRow.erpName === 'صنف ERP رقم 9'
+        && columnControl.specRow.total === undefined,
+        JSON.stringify({ cols: columnControl.specColumns, row: columnControl.specRow }));
 
   // ---------- which price column carries the dash ----------
   const spec = await page.evaluate(async () => {
