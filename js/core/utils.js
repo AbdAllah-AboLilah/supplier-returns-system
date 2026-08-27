@@ -181,26 +181,60 @@ export function printHtmlDocument(html) {
   return new Promise((resolve, reject) => {
     const frame = document.createElement('iframe');
     frame.setAttribute('aria-hidden', 'true');
-    frame.style.cssText = 'position:fixed;left:-9999px;bottom:0;width:80mm;height:0;border:0;';
+    // A real height, not zero: a frame with no height lays its document out
+    // in a zero-height viewport and hands the printer nothing.
+    frame.style.cssText = 'position:fixed;left:-9999px;top:0;width:80mm;height:800px;border:0;';
+
     let settled = false;
-    const finish = (err) => {
-      if (settled) return;
-      settled = true;
-      setTimeout(() => frame.remove(), 2000); // let the print dialog read the document first
-      err ? reject(err) : resolve();
-    };
+    const finish = (err) => { if (settled) return; settled = true; err ? reject(err) : resolve(); };
+
     frame.onload = () => {
-      try {
-        frame.contentWindow.focus();
-        frame.contentWindow.print();
-        finish();
-      } catch (err) {
-        finish(err);
-      }
+      const win = frame.contentWindow;
+      const doc = frame.contentDocument;
+
+      // The frame has to outlive the print dialog. A phone renders its print
+      // preview after the dialog opens, while the person is still choosing a
+      // printer, so pulling the frame away on a short timer prints blank.
+      // It goes when the browser says printing is over — but never in the
+      // first few seconds, since some browsers fire that event immediately
+      // when no printer is attached.
+      let removed = false;
+      const openedAt = Date.now();
+      const drop = () => {
+        if (removed) return;
+        const tooSoon = 8000 - (Date.now() - openedAt);
+        if (tooSoon > 0) { setTimeout(drop, tooSoon); return; }
+        removed = true;
+        frame.remove();
+      };
+      try { win.addEventListener('afterprint', drop, { once: true }); } catch (e) { /* older browsers */ }
+      setTimeout(drop, 60000);
+
+      const fontsReady = (doc && doc.fonts && doc.fonts.ready) || Promise.resolve();
+      Promise.resolve(fontsReady).catch(() => {}).then(() => {
+        try {
+          // Sized to what it holds, so a long receipt is not cut off.
+          if (doc && doc.documentElement) {
+            frame.style.height = `${Math.max(800, doc.documentElement.scrollHeight)}px`;
+          }
+          win.focus();
+          win.print();
+          finish();
+        } catch (err) {
+          removed = true;
+          frame.remove();
+          finish(err);
+        }
+      });
     };
-    frame.onerror = () => finish(new Error('تعذّر تجهيز صفحة الطباعة'));
-    document.body.appendChild(frame);
+    frame.onerror = () => { frame.remove(); finish(new Error('تعذّر تجهيز صفحة الطباعة')); };
+
+    // The content goes on before the frame goes in. An iframe inserted empty
+    // gets an about:blank document and fires load for *that* — and that load
+    // is what triggered the print, so what reached the printer was a blank
+    // page every time, with the receipt arriving in the frame afterwards.
     frame.srcdoc = html;
+    document.body.appendChild(frame);
   });
 }
 

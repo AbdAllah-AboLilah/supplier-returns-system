@@ -261,18 +261,41 @@ try {
   });
   check('report image renders Arabic with spacing', imageCheck.ok, `canvas ${imageCheck.w}x${imageCheck.h}`);
 
-  // ---------- printing needs no popup ----------
+  // ---------- printing needs no popup, and hands over a real document ----------
+  // The thermal receipt came out blank twice over: the frame carrying the
+  // document had no height, so it laid out in a zero-height viewport, and
+  // it was torn down two seconds later while a phone's print preview was
+  // still rendering it.
   const printCheck = await page.evaluate(async () => {
     const { printHtmlDocument } = await import('/js/core/utils.js');
     let popupOpened = false;
     const realOpen = window.open;
     window.open = () => { popupOpened = true; return null; };
     let threw = false;
-    await printHtmlDocument('<!DOCTYPE html><html><body>اختبار الطباعة</body></html>').catch(() => { threw = true; });
+    const before = document.querySelectorAll('iframe').length;
+    await printHtmlDocument(
+      '<!DOCTYPE html><html><body><div style="height:400px">اختبار الطباعة</div></body></html>'
+    ).catch(() => { threw = true; });
     window.open = realOpen;
-    return { popupOpened, threw };
+    const frames = Array.from(document.querySelectorAll('iframe'));
+    const frame = frames.length > before ? frames[frames.length - 1] : null;
+    const doc = frame ? frame.contentDocument : null;
+    return {
+      popupOpened, threw,
+      height: frame ? Math.round(frame.getBoundingClientRect().height) : 0,
+      text: doc ? doc.body.textContent.trim() : '',
+    };
   });
   check('printing does not rely on a popup', printCheck.popupOpened === false && !printCheck.threw, JSON.stringify(printCheck));
+  check('the document handed to the printer is laid out, not zero-height',
+        printCheck.height > 0 && printCheck.text.includes('اختبار الطباعة'),
+        JSON.stringify(printCheck));
+
+  // Still there well after the old two-second teardown.
+  await page.waitForTimeout(3000);
+  const printFrameAlive = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('iframe')).some(f => (f.contentDocument?.body.textContent || '').includes('اختبار الطباعة')));
+  check('and it outlives the print dialog instead of being pulled away', printFrameAlive, `alive=${printFrameAlive}`);
 
   // ---------- suggestions inside a modal are not clipped ----------
   await goto('/supplier-items');
