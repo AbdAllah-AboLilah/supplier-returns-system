@@ -148,12 +148,17 @@ export function renderPickedErp(node, { state = 'none', erpName = '' } = {}) {
   if (!node) return;
   if (state === 'none') { node.style.display = 'none'; node.innerHTML = ''; return; }
   node.style.display = '';
+  // The button is the same offer in all three unlinked states: pick the ERP
+  // item now, here, instead of adding the line and going to find it after.
+  const pick = (label) => `<button type="button" class="btn btn-sm btn-ghost btn-pick-erp">${label}</button>`;
   if (state === 'linked') {
     node.innerHTML = `صنف ERP: <b>${escapeHtml(erpName)}</b>`;
+  } else if (state === 'will-link') {
+    node.innerHTML = `هيتربط بصنف ERP: <b>${escapeHtml(erpName)}</b> ${pick('تغيير')}`;
   } else if (state === 'new') {
-    node.innerHTML = 'صنف جديد — هيتسجّل عند المورد من غير ربط ERP';
+    node.innerHTML = `صنف جديد — هيتسجّل عند المورد ${pick('🔗 اربطه بصنف ERP')}`;
   } else {
-    node.innerHTML = '<span class="badge badge-warn">⚠️ مش مربوط بصنف ERP</span>';
+    node.innerHTML = `<span class="badge badge-warn">⚠️ مش مربوط بصنف ERP</span> ${pick('🔗 ربط')}`;
   }
 }
 
