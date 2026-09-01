@@ -1020,6 +1020,51 @@ try {
   check('and switching back lands on the same figure',
         Number(backToPiece) === Number(piecePrice), `${piecePrice} -> ${dozen.price} -> ${backToPiece}`);
 
+  // ---------- linking a brand-new name from the add card itself ----------
+  // Reported: standing on "صنف جديد" in the add card there was no way to
+  // link it — the only route was add it, leave, link it, come back.
+  for (const screen of [
+    { route: '/invoice-reviews/ivlink', nameSel: '#add-item-name', listSel: '#add-item-erp-results', qtySel: '#add-qty', priceSel: '#add-price', addSel: '#btn-add-line', store: 'invoiceReviewItems', parent: 'reviewId', parentId: 'ivlink' },
+    { route: '/returns/r13', nameSel: '#add-item-name', listSel: '#add-item-results', qtySel: '#add-item-qty', priceSel: '#add-item-cost', addSel: '#btn-add-item', store: 'returnItems', parent: 'returnId', parentId: 'r13' },
+  ]) {
+    const label = screen.store === 'returnItems' ? 'return' : 'invoice';
+    await goto('/settings'); // force a redraw even when already on the route
+    await page.waitForTimeout(300);
+    await goto(screen.route);
+    await page.waitForTimeout(1200);
+    const itemName = `صنف مربوط من الكارت ${label}`;
+    await page.click(screen.nameSel);
+    await page.type(screen.nameSel, itemName, { delay: 25 });
+    await page.waitForTimeout(800);
+    // "+ إضافة ... كصنف جديد" is the last row, and picking it is what puts
+    // the card into the state the offer to link belongs to.
+    await page.locator(`${screen.listSel} .autocomplete-item`).last().click();
+    await page.waitForTimeout(500);
+    await page.click('#add-item-erp .btn-pick-erp');
+    await page.waitForSelector('#erp-search', { timeout: 10000 });
+    await page.type('#erp-search', 'صنف ERP رقم 45', { delay: 25 });
+    await page.waitForTimeout(600);
+    await page.locator('#erp-results .autocomplete-item').first().click();
+    await page.waitForTimeout(500);
+    const pending = await page.$eval('#add-item-erp', el => el.textContent.replace(/\s+/g, ' ').trim());
+    check(`the ${label} add card can link a new name before adding it`,
+          pending.includes('هيتربط') && pending.includes('45'), pending);
+
+    await page.fill(screen.qtySel, '2');
+    await page.fill(screen.priceSel, '10');
+    await page.click(screen.addSel);
+    await page.waitForTimeout(2500);
+    const landed = await page.evaluate(async ({ store, parent, parentId, itemName }) => {
+      const db = await import('/js/core/db.js');
+      const lines = await db.getByIndex(store, parent, parentId);
+      const line = lines.find(l => (l.itemName || l.supplierItemName) === itemName);
+      const si = line ? await db.getById('supplierItems', line.supplierItemId) : null;
+      return { lineErp: line?.erpItemId, itemErp: si?.erpItemId };
+    }, { store: screen.store, parent: screen.parent, parentId: screen.parentId, itemName });
+    check(`and the ${label} line goes in already linked`,
+          landed.lineErp === 'e45' && landed.itemErp === 'e45', JSON.stringify(landed));
+  }
+
   // ---------- an invoice line follows a link made elsewhere ----------
   // Reported: linking the item from the supplier's screen left the invoice
   // line saying "غير مرتبط" — the only way out was to delete it and type
@@ -1027,11 +1072,17 @@ try {
   // since the beginning; a review never did.
   await goto('/invoice-reviews/ivlink');
   await page.waitForTimeout(1000);
-  const beforeLink = await page.evaluate(() => ({
-    warn: !!document.querySelector('.badge-warn'),
-    linkButton: !!document.querySelector('.btn-link-erp'),
-    erpShown: document.querySelector('tr[data-line] .ac-sub')?.textContent.trim() || '',
-  }));
+  // Read that one line, not "the first row" — the review carries other
+  // lines by now and they are not what this is about.
+  const readLine = () => page.evaluate(() => {
+    const row = document.querySelector('tr[data-line="ivlink-1"]');
+    return {
+      warn: !!row?.querySelector('.badge-warn'),
+      linkButton: !!row?.querySelector('.btn-link-erp'),
+      erpShown: row?.querySelector('.ac-sub')?.textContent.trim() || '',
+    };
+  });
+  const beforeLink = await readLine();
   check('an unlinked line says so and offers to link it right there',
         beforeLink.warn && beforeLink.linkButton && !beforeLink.erpShown, JSON.stringify(beforeLink));
 
@@ -1045,15 +1096,13 @@ try {
   await page.waitForTimeout(400);
   await goto('/invoice-reviews/ivlink');
   await page.waitForTimeout(1200);
-  const afterLink = await page.evaluate(async () => {
-    const db = await import('/js/core/db.js');
-    const line = await db.getById('invoiceReviewItems', 'ivlink-1');
-    return {
-      warn: !!document.querySelector('.badge-warn'),
-      erpShown: document.querySelector('tr[data-line] .ac-sub')?.textContent.trim() || '',
-      storedErpId: line.erpItemId,
-    };
-  });
+  const afterLink = {
+    ...(await readLine()),
+    storedErpId: await page.evaluate(async () => {
+      const db = await import('/js/core/db.js');
+      return (await db.getById('invoiceReviewItems', 'ivlink-1')).erpItemId;
+    }),
+  };
   check('reopening the review picks the link up, with no delete and retype',
         !afterLink.warn && afterLink.erpShown.includes('33') && afterLink.storedErpId === 'e33',
         JSON.stringify(afterLink));
@@ -1069,8 +1118,8 @@ try {
   await goto('/returns/active'); // the hash has to change for the router to redraw
   await page.waitForTimeout(400);
   await goto('/invoice-reviews/ivlink');
-  await page.waitForSelector('.btn-link-erp', { timeout: 10000 });
-  await page.click('.btn-link-erp');
+  await page.waitForSelector('tr[data-line="ivlink-1"] .btn-link-erp', { timeout: 10000 });
+  await page.click('tr[data-line="ivlink-1"] .btn-link-erp');
   await page.waitForSelector('#erp-search', { timeout: 10000 });
   const pickerOpen = await page.evaluate(() =>
     document.querySelector('.modal-header h3')?.textContent.trim() || '');

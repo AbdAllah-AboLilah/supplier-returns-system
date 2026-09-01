@@ -20,7 +20,7 @@ import { uid, nowIso, fmtMoney, fmtInt, fmtDate, escapeHtml, fuzzyIncludes, debo
 import { autosaveField } from '../core/autosave.js';
 import { navigate } from '../core/router.js';
 import { openSupplierForm } from './suppliers.js';
-import { searchSupplierItems, getOrCreateSupplierItem, updateCost, openLinkModal } from './supplier-items.js';
+import { searchSupplierItems, getOrCreateSupplierItem, updateCost, openLinkModal, openErpPicker } from './supplier-items.js';
 import { getUnits, saveUnits, unitByKey } from '../core/units.js';
 import { drawReport, canvasToBlob } from './report-canvas.js';
 import { buildThermalReceipt } from './thermal-receipt.js';
@@ -628,6 +628,8 @@ function syncAddItemToSupplier(container, review) {
   input.value = '';
   input.dataset.supplierItemId = '';
   input.dataset.erpId = '';
+  input.dataset.pendingErpId = '';
+  input.dataset.pendingErpName = '';
   const results = qs('#add-item-erp-results', container);
   if (results) { results.style.display = 'none'; results.innerHTML = ''; }
   renderPickedErp(qs('#add-item-erp', container), { state: 'none' });
@@ -815,9 +817,34 @@ function wireDetailEvents(container, review, items, units, suppliers) {
   itemNameInput.addEventListener('input', () => {
     itemNameInput.dataset.supplierItemId = ''; // typing invalidates any previous pick
     itemNameInput.dataset.erpId = '';
+    itemNameInput.dataset.pendingErpId = '';
+    itemNameInput.dataset.pendingErpName = '';
     renderPickedErp(pickedErpLine, { state: 'none' });
     const priceInput = qs('#add-price', container);
     if (priceInput) priceInput.dataset.piecePrice = '';
+  });
+
+  // Pick the ERP item from the add card. An existing item with no link is
+  // linked on the spot; a name that is not a supplier item yet remembers the
+  // pick and goes in already linked when the line is added.
+  pickedErpLine?.addEventListener('click', (e) => {
+    if (!e.target.closest('.btn-pick-erp')) return;
+    e.preventDefault();
+    const supplierItemId = itemNameInput.dataset.supplierItemId;
+    if (supplierItemId) {
+      openLinkModal(supplierItemId, async () => {
+        const si = await getById('supplierItems', supplierItemId);
+        const erp = si?.erpItemId ? await getById('erpItems', si.erpItemId) : null;
+        itemNameInput.dataset.erpId = si?.erpItemId || '';
+        renderPickedErp(pickedErpLine, { state: erp ? 'linked' : 'unlinked', erpName: erp?.name || '' });
+      });
+      return;
+    }
+    openErpPicker((item) => {
+      itemNameInput.dataset.pendingErpId = item.id;
+      itemNameInput.dataset.pendingErpName = item.name;
+      renderPickedErp(pickedErpLine, { state: 'will-link', erpName: item.name });
+    });
   });
   itemNameInput.addEventListener('input', debounce(async () => {
     if (!review.supplierId) return;
@@ -841,6 +868,8 @@ function wireDetailEvents(container, review, items, units, suppliers) {
         itemNameInput.value = it.dataset.name;
         itemNameInput.dataset.supplierItemId = it.dataset.supplierItemId || '';
         itemNameInput.dataset.erpId = it.dataset.erpId || '';
+        itemNameInput.dataset.pendingErpId = '';
+        itemNameInput.dataset.pendingErpName = '';
         renderPickedErp(pickedErpLine, {
           state: it.dataset.supplierItemId ? (it.dataset.erpName ? 'linked' : 'unlinked') : 'new',
           erpName: it.dataset.erpName,
@@ -876,9 +905,10 @@ function wireDetailEvents(container, review, items, units, suppliers) {
     let supplierItemId = itemNameInput.dataset.supplierItemId || null;
     let erpItemId = itemNameInput.dataset.erpId || null;
     if (review.supplierId && itemName) {
+      const pendingErpId = itemNameInput.dataset.pendingErpId || null;
       const si = supplierItemId
         ? await getById('supplierItems', supplierItemId)
-        : await getOrCreateSupplierItem(review.supplierId, itemName);
+        : await getOrCreateSupplierItem(review.supplierId, itemName, { erpItemId: pendingErpId });
       if (si) { supplierItemId = si.id; erpItemId = si.erpItemId || null; }
     }
 

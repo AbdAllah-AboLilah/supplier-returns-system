@@ -14,7 +14,7 @@ import { uid, nowIso, fmtMoney, fmtDate, fmtInt, escapeHtml, fuzzyIncludes, debo
          renderPreservingFocus, guarded, closeOnOutsideClick, submitOnce } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
 import { navigate } from '../core/router.js';
-import { searchSupplierItems, getOrCreateSupplierItem, updateCost as updateSupplierItemCost, openLinkModal } from './supplier-items.js';
+import { searchSupplierItems, getOrCreateSupplierItem, updateCost as updateSupplierItemCost, openLinkModal, openErpPicker } from './supplier-items.js';
 import { autosaveField } from '../core/autosave.js';
 import { openExportOptionsModal } from './return-export.js';
 
@@ -131,12 +131,14 @@ export async function createDraftReturn(supplierId) {
 
 async function touchReturn(ret) { ret.updatedAt = nowIso(); await put('returns', ret); }
 
-export async function addItemLine(returnId, supplierId, supplierItemName, qty, costOverride, costIsFallback = false, supplierItemId = null) {
+export async function addItemLine(returnId, supplierId, supplierItemName, qty, costOverride, costIsFallback = false, supplierItemId = null, newErpItemId = null) {
   // A name can now belong to more than one supplier item (same name, a
   // different ERP link), so when one was picked from the suggestions the
   // line is tied to that exact row instead of being matched by name again.
+  // newErpItemId is the ERP item chosen in the add card for a name that is
+  // not a supplier item yet — it goes in already linked.
   const picked = supplierItemId ? await getById('supplierItems', supplierItemId) : null;
-  const si = picked || await getOrCreateSupplierItem(supplierId, supplierItemName);
+  const si = picked || await getOrCreateSupplierItem(supplierId, supplierItemName, { erpItemId: newErpItemId });
   const quantity = Number(qty) || 1;
 
   let unitCost = Number(si.currentCost) || 0;
@@ -845,7 +847,31 @@ function wireDetailEvents(container, ret, lines, supplier) {
     const erpLine = qs('#add-item-erp', container);
     nameInput.addEventListener('input', () => {
       nameInput.dataset.supplierItemId = '';
+      nameInput.dataset.pendingErpId = '';
+      nameInput.dataset.pendingErpName = '';
       renderPickedErp(erpLine, { state: 'none' }); // the pick it described is gone
+    });
+
+    // Pick the ERP item from the add card. An existing item with no link is
+    // linked on the spot; a name that is not a supplier item yet remembers
+    // the pick and goes in already linked when the line is added.
+    erpLine?.addEventListener('click', (e) => {
+      if (!e.target.closest('.btn-pick-erp')) return;
+      e.preventDefault();
+      const supplierItemId = nameInput.dataset.supplierItemId;
+      if (supplierItemId) {
+        openLinkModal(supplierItemId, async () => {
+          const si = await getById('supplierItems', supplierItemId);
+          const erp = si?.erpItemId ? await getById('erpItems', si.erpItemId) : null;
+          renderPickedErp(erpLine, { state: erp ? 'linked' : 'unlinked', erpName: erp?.name || '' });
+        });
+        return;
+      }
+      openErpPicker((item) => {
+        nameInput.dataset.pendingErpId = item.id;
+        nameInput.dataset.pendingErpName = item.name;
+        renderPickedErp(erpLine, { state: 'will-link', erpName: item.name });
+      });
     });
     nameInput.addEventListener('input', debounce(async () => {
       const q = nameInput.value.trim();
@@ -873,6 +899,8 @@ function wireDetailEvents(container, ret, lines, supplier) {
         it.addEventListener('click', () => {
           nameInput.value = it.dataset.name;
           nameInput.dataset.supplierItemId = it.dataset.supplierItemId || '';
+          nameInput.dataset.pendingErpId = '';
+          nameInput.dataset.pendingErpName = '';
           renderPickedErp(erpLine, {
             state: it.dataset.supplierItemId ? (it.dataset.erpName ? 'linked' : 'unlinked') : 'new',
             erpName: it.dataset.erpName,
@@ -943,7 +971,8 @@ function wireDetailEvents(container, ret, lines, supplier) {
     if (!qty || Number(qty) <= 0) { toast('اكتب الكمية أولًا', 'error'); qs('#add-item-qty', container)?.focus(); return; }
 
     const pickedId = qs('#add-item-name', container)?.dataset.supplierItemId || null;
-    await addItemLine(ret.id, ret.supplierId, name, qty, cost, costIsFallback, pickedId);
+    const pendingErpId = qs('#add-item-name', container)?.dataset.pendingErpId || null;
+    await addItemLine(ret.id, ret.supplierId, name, qty, cost, costIsFallback, pickedId, pendingErpId);
     await renderReturnDetail(container, ret.id);
     qs('#add-item-name', container)?.focus();
   }, { busyLabel: 'جارِ الإضافة...' }));

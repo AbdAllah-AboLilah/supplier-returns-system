@@ -493,9 +493,13 @@ async function openAddMappingModal(supplierId, onDone) {
   nameInput.focus();
 }
 
-export function openLinkModal(supplierItemId, onDone) {
+// The ERP picker on its own: search, pick, hand the item back. Linking an
+// existing supplier item is one thing you can do with it; an add card uses
+// it to choose the link for an item that does not exist yet, so a new name
+// can go in already linked instead of being added and fixed afterwards.
+export function openErpPicker(onPick, { title = 'ربط بصنف نظام ERP' } = {}) {
   const { close, node } = openModal({
-    title: 'ربط بصنف نظام ERP',
+    title,
     bodyHtml: `
       <div class="field autocomplete">
         <label>ابحث عن صنف ERP</label>
@@ -518,10 +522,22 @@ export function openLinkModal(supplierItemId, onDone) {
     results.innerHTML = matches.map(m => `<div class="autocomplete-item" data-id="${m.id}"><b>${escapeHtml(m.name)}</b><div class="ac-sub">${escapeHtml(m.barcode || '')}</div></div>`).join('');
     results.style.display = 'block';
     results.querySelectorAll('.autocomplete-item').forEach(it => {
-      it.addEventListener('click', guarded(async () => { await linkErpItem(supplierItemId, it.dataset.id); toast('تم الربط', 'success'); close(); onDone(); }));
+      it.addEventListener('click', () => {
+        const picked = matches.find(m => m.id === it.dataset.id);
+        close();
+        if (picked) onPick(picked);
+      });
     });
   }, 200));
   input.focus();
+}
+
+export function openLinkModal(supplierItemId, onDone) {
+  openErpPicker(guarded(async (item) => {
+    await linkErpItem(supplierItemId, item.id);
+    toast('تم الربط', 'success');
+    onDone();
+  }));
 }
 
 function openCostModal(supplierItemId, onDone) {
