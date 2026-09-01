@@ -213,4 +213,22 @@ store('invoiceReviews').set('ivnew', {
   invoiceNumber: '', erpEntered: false, erpEnteredAt: null, photo: null,
   createdAt: iso('2026-08-02'), updatedAt: iso('2026-08-02'),
 });
+// An item with no ERP link yet, on a review of its own: the state where
+// linking it elsewhere used to leave the invoice line saying "غير مرتبط"
+// until it was deleted and typed again.
+store('supplierItems').set('siunlinked', {
+  id: 'siunlinked', supplierId: 's2', supplierItemName: 'صنف لسه مش مربوط',
+  erpItemId: null, currentCost: 20,
+  createdAt: iso('2026-01-01'), updatedAt: iso('2026-01-01'),
+});
+store('invoiceReviews').set('ivlink', {
+  id: 'ivlink', reviewNumber: 'INV-2026-00033', supplierId: 's2', supplierName: 'مورد النور',
+  invoiceNumber: 'F33', erpEntered: false, erpEnteredAt: null, photo: null,
+  createdAt: iso('2026-08-02'), updatedAt: iso('2026-08-02'),
+});
+store('invoiceReviewItems').set('ivlink-1', {
+  id: 'ivlink-1', reviewId: 'ivlink', itemName: 'صنف لسه مش مربوط', erpItemId: null,
+  supplierItemId: 'siunlinked', qty: 3, unitKey: 'piece', price: 20, createdAt: iso('2026-08-02'),
+});
+
 store('counters').set('INV-2026', { name: 'INV-2026', value: 30 });

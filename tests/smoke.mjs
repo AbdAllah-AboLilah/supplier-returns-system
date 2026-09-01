@@ -1020,6 +1020,65 @@ try {
   check('and switching back lands on the same figure',
         Number(backToPiece) === Number(piecePrice), `${piecePrice} -> ${dozen.price} -> ${backToPiece}`);
 
+  // ---------- an invoice line follows a link made elsewhere ----------
+  // Reported: linking the item from the supplier's screen left the invoice
+  // line saying "غير مرتبط" — the only way out was to delete it and type
+  // it again. The return screen has re-read the mapping on every open
+  // since the beginning; a review never did.
+  await goto('/invoice-reviews/ivlink');
+  await page.waitForTimeout(1000);
+  const beforeLink = await page.evaluate(() => ({
+    warn: !!document.querySelector('.badge-warn'),
+    linkButton: !!document.querySelector('.btn-link-erp'),
+    erpShown: document.querySelector('tr[data-line] .ac-sub')?.textContent.trim() || '',
+  }));
+  check('an unlinked line says so and offers to link it right there',
+        beforeLink.warn && beforeLink.linkButton && !beforeLink.erpShown, JSON.stringify(beforeLink));
+
+  // Link it the way the supplier screen would, then come back.
+  await page.evaluate(async () => {
+    const db = await import('/js/core/db.js');
+    const si = await db.getById('supplierItems', 'siunlinked');
+    await db.put('supplierItems', { ...si, erpItemId: 'e33' });
+  });
+  await goto('/returns/active');
+  await page.waitForTimeout(400);
+  await goto('/invoice-reviews/ivlink');
+  await page.waitForTimeout(1200);
+  const afterLink = await page.evaluate(async () => {
+    const db = await import('/js/core/db.js');
+    const line = await db.getById('invoiceReviewItems', 'ivlink-1');
+    return {
+      warn: !!document.querySelector('.badge-warn'),
+      erpShown: document.querySelector('tr[data-line] .ac-sub')?.textContent.trim() || '',
+      storedErpId: line.erpItemId,
+    };
+  });
+  check('reopening the review picks the link up, with no delete and retype',
+        !afterLink.warn && afterLink.erpShown.includes('33') && afterLink.storedErpId === 'e33',
+        JSON.stringify(afterLink));
+
+  // And the link button on the row opens the same picker the return uses.
+  await page.evaluate(async () => {
+    const db = await import('/js/core/db.js');
+    const si = await db.getById('supplierItems', 'siunlinked');
+    await db.put('supplierItems', { ...si, erpItemId: null });
+    const line = await db.getById('invoiceReviewItems', 'ivlink-1');
+    await db.put('invoiceReviewItems', { ...line, erpItemId: null });
+  });
+  await goto('/returns/active'); // the hash has to change for the router to redraw
+  await page.waitForTimeout(400);
+  await goto('/invoice-reviews/ivlink');
+  await page.waitForSelector('.btn-link-erp', { timeout: 10000 });
+  await page.click('.btn-link-erp');
+  await page.waitForSelector('#erp-search', { timeout: 10000 });
+  const pickerOpen = await page.evaluate(() =>
+    document.querySelector('.modal-header h3')?.textContent.trim() || '');
+  check('the link button opens the ERP picker without leaving the invoice',
+        pickerOpen.includes('ربط'), pickerOpen);
+  await page.click('.modal-close');
+  await page.waitForTimeout(400);
+
   // ---------- deleting a line asks first ----------
   // Reported: an item added to a review turned up deleted. The delete
   // button sits beside the price on a cramped phone row and took the line
