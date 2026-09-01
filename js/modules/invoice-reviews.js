@@ -12,7 +12,7 @@
 // two collections (invoiceReviews, invoiceReviewItems) that no other
 // module touches.
 // =========================================================
-import { getAll, getById, put, remove, getByIndex, removeWhere, nextSequence, getSetting } from '../core/db.js';
+import { getAll, getById, put, bulkPut, remove, getByIndex, removeWhere, nextSequence, getSetting } from '../core/db.js';
 import { uid, nowIso, fmtMoney, fmtInt, fmtDate, escapeHtml, fuzzyIncludes, debounce,
          openModal, confirmDialog, toast, paginate, renderPagination, qs, qsa,
          renderPreservingFocus, guarded, closeOnOutsideClick, printHtmlDocument, submitOnce,
@@ -20,7 +20,7 @@ import { uid, nowIso, fmtMoney, fmtInt, fmtDate, escapeHtml, fuzzyIncludes, debo
 import { autosaveField } from '../core/autosave.js';
 import { navigate } from '../core/router.js';
 import { openSupplierForm } from './suppliers.js';
-import { searchSupplierItems, getOrCreateSupplierItem, updateCost } from './supplier-items.js';
+import { searchSupplierItems, getOrCreateSupplierItem, updateCost, openLinkModal } from './supplier-items.js';
 import { getUnits, saveUnits, unitByKey } from '../core/units.js';
 import { drawReport, canvasToBlob } from './report-canvas.js';
 import { buildThermalReceipt } from './thermal-receipt.js';
@@ -180,8 +180,31 @@ export async function listReviews() {
 // Like the return screen, this view does not re-render on an inline edit,
 // so anything reporting on the review reads the lines back through here
 // rather than reusing the copy the screen was drawn with.
+// A line stores which ERP item it maps to, copied from the supplier item
+// when it was added. Link that supplier item later — from its own screen,
+// from a return, from anywhere — and the line was left behind saying
+// "غير مرتبط" until it was deleted and typed again. The return screen has
+// re-read the mapping on every open since the beginning; this is the same
+// thing for a review. Keyed off the line's own supplierItemId rather than
+// the supplier's index, so a line pointing at another supplier's item is
+// still brought up to date instead of quietly skipped.
+async function syncReviewErpLinks(rows) {
+  const withItem = rows.filter(r => r.supplierItemId);
+  if (!withItem.length) return rows;
+  const siById = Object.fromEntries((await getAll('supplierItems')).map(si => [si.id, si]));
+  const changed = withItem.filter(r => {
+    const si = siById[r.supplierItemId];
+    return si && (si.erpItemId || null) !== (r.erpItemId || null);
+  });
+  if (!changed.length) return rows;
+  changed.forEach(r => { r.erpItemId = siById[r.supplierItemId].erpItemId || null; });
+  await bulkPut('invoiceReviewItems', changed);
+  return rows;
+}
+
 export async function loadReviewItemsWithBarcodes(reviewId) {
   const [rows, erpItems] = await Promise.all([getReviewItems(reviewId), getAll('erpItems')]);
+  await syncReviewErpLinks(rows);
   const byId = Object.fromEntries(erpItems.map(i => [i.id, i]));
   return rows.map(i => {
     const erp = i.erpItemId ? byId[i.erpItemId] : null;
@@ -484,7 +507,14 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
             const c = computeLine(i, units);
             return `
             <tr data-line="${i.id}">
-              <td data-label="الصنف">${i.itemName ? `<b>${escapeHtml(i.itemName)}</b>` : '<span class="text-dim">—</span>'}${i.itemName ? (i.erpItemId ? '' : ' <span class="badge badge-warn">⚠️ غير مرتبط</span>') : ''}</td>
+              <td data-label="الصنف">
+                ${i.itemName ? `<b>${escapeHtml(i.itemName)}</b>` : '<span class="text-dim">—</span>'}
+                ${i.erpItemName
+                  ? `<div class="ac-sub">${escapeHtml(i.erpItemName)}</div>`
+                  : (i.supplierItemId
+                    ? `<div class="mt-8"><span class="badge badge-warn">⚠️ غير مرتبط</span> <button class="btn btn-sm btn-ghost btn-link-erp" data-supplier-item-id="${i.supplierItemId}">ربط</button></div>`
+                    : '')}
+              </td>
               <td class="num" data-label="الكمية"><input type="number" min="0" step="any" class="ln-qty" data-id="${i.id}" value="${i.qty}" style="width:80px;text-align:center;"></td>
               <td data-label="الوحدة">
                 <select class="ln-unit" data-id="${i.id}" data-prev-unit="${escapeHtml(i.unitKey || '')}">
@@ -710,6 +740,12 @@ function wireDetailEvents(container, review, items, units, suppliers) {
   // Deleting a line used to happen on a single tap, with no way back —
   // on a phone the button sits right beside the price being edited, and a
   // mis-tap silently took the line away.
+  // Link straight from the invoice — no need to leave, find the item in the
+  // supplier's list, link it there and come back.
+  qsa('.btn-link-erp', container).forEach(b => b.addEventListener('click', () => {
+    openLinkModal(b.dataset.supplierItemId, () => renderInvoiceReviewDetail(container, review.id));
+  }));
+
   qsa('.ln-remove', container).forEach(b => b.addEventListener('click', guarded(async () => {
     const name = b.dataset.name || 'الصنف';
     if (!(await confirmDialog(`هيتشال "${name}" من الفاتورة. تمام؟`, { okLabel: 'حذف', danger: true }))) return;
