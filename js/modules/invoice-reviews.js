@@ -521,8 +521,8 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
                   ${units.map(u => `<option value="${u.key}" ${i.unitKey === u.key ? 'selected' : ''}>${escapeHtml(u.label)}</option>`).join('')}
                 </select>
               </td>
-              <td class="num" data-bulk-price data-label="${escapeHtml(bulkPriceLabel(items, units))}"><input type="number" min="0" step="0.01" class="ln-price" data-id="${i.id}" value="${i.price}" style="width:90px;text-align:center;"></td>
-              <td class="num" id="ln-piece-${i.id}" data-label="سعر القطعة"><b>${fmtMoney(c.piecePrice)}</b></td>
+              <td class="num" data-bulk-price data-label="سعر ${escapeHtml(withAl(c.unit.label))}"><input type="number" min="0" step="0.01" class="ln-price" data-id="${i.id}" value="${i.price}" style="width:90px;text-align:center;"></td>
+              <td class="num" id="ln-piece-${i.id}" data-label="سعر القطعة المحسوب"><b>${fmtMoney(c.piecePrice)}</b></td>
               <td class="num text-dim" id="ln-actual-${i.id}" data-label="الكمية الفعلية">${fmtInt(c.actualQty)} قطعة</td>
               <td class="num text-mono" id="ln-total-${i.id}" data-label="الإجمالي">${fmtMoney(c.total)}</td>
               <td><button class="btn btn-sm btn-ghost ln-remove" data-id="${i.id}" data-name="${escapeHtml(i.itemName || '')}">حذف</button></td>
@@ -736,6 +736,7 @@ function wireDetailEvents(container, review, items, units, suppliers) {
     sel.dataset.prevUnit = sel.value;
     const line = await updateReviewItem(sel.dataset.id, patch);
     recalcLine(container, sel.dataset.id, units);
+    refreshRowPriceLabel(container, sel.dataset.id, units);
     refreshBulkPriceHeader(container, units);
     await syncSupplierCostFromLine(line, units);
   })));
@@ -946,12 +947,26 @@ function wireDetailEvents(container, review, items, units, suppliers) {
 // The bulk price column is named after the unit the invoice actually uses,
 // so switching a row's unit can change that name. Without this it kept
 // saying "سعر الدستة" over a column that had stopped being dozen prices.
+//
+// Only the shared header, though. On a phone the table becomes cards and
+// every cell prints its own label beside its own value, so an
+// invoice-wide name there is a lie on any row that does not use that
+// unit: a line entered by the piece showed "سعر الدستة: 205" next to a
+// price that was, correctly, 205 a piece — which reads as the price
+// having been saved wrong. Each row is labelled after its own unit.
 function refreshBulkPriceHeader(container, units) {
   const rows = qsa('tr[data-line]', container).map(tr => ({ unitKey: tr.querySelector('.ln-unit')?.value }));
-  const label = bulkPriceLabel(rows, units);
   const head = qs('#bulk-price-head', container);
-  if (head) head.textContent = label;
-  qsa('td[data-bulk-price]', container).forEach(td => { td.dataset.label = label; });
+  if (head) head.textContent = bulkPriceLabel(rows, units);
+}
+
+// The row's own price label, for the card layout.
+function refreshRowPriceLabel(container, lineId, units) {
+  const row = container.querySelector(`tr[data-line="${lineId}"]`);
+  const cell = row?.querySelector('td[data-bulk-price]');
+  if (!cell) return;
+  const unit = unitByKey(units, row.querySelector('.ln-unit')?.value);
+  cell.dataset.label = `سعر ${withAl(unit?.label || 'الوحدة')}`;
 }
 
 function recalcLine(container, lineId, units) {

@@ -1065,6 +1065,39 @@ try {
           landed.lineErp === 'e45' && landed.itemErp === 'e45', JSON.stringify(landed));
   }
 
+  // ---------- every row is labelled by its own unit ----------
+  // Reported from a phone: a line entered by the piece read
+  // "سعر الدستة: 205" beside a price that was, correctly, 205 a piece.
+  // The table becomes cards on a phone and each cell prints its own label,
+  // so the invoice-wide column name was a lie on that row.
+  await goto('/invoice-reviews/ivmix');
+  await page.waitForTimeout(1000);
+  const labels = await page.evaluate(() => {
+    const at = (id) => document.querySelector(`tr[data-line="${id}"] td[data-bulk-price]`);
+    return {
+      head: document.querySelector('#bulk-price-head')?.textContent.trim(),
+      dozenRow: at('ivmix-dozen')?.dataset.label,
+      pieceRow: at('ivmix-piece')?.dataset.label,
+      pieceValue: at('ivmix-piece')?.querySelector('.ln-price')?.value,
+      piecePrice: document.querySelector('#ln-piece-ivmix-piece')?.textContent.trim(),
+      pieceTotal: document.querySelector('#ln-total-ivmix-piece')?.textContent.trim(),
+    };
+  });
+  check('the price a line was entered at is saved as typed',
+        labels.pieceValue === '205' && labels.piecePrice === '205.00' && labels.pieceTotal === '6,150.00',
+        JSON.stringify(labels));
+  check('and each row carries its own unit in its label, not the column name',
+        labels.head === 'سعر الدستة' && labels.dozenRow === 'سعر الدستة' && labels.pieceRow === 'سعر القطعة',
+        JSON.stringify(labels));
+
+  // Switch that row to dozen and its label follows it.
+  await page.selectOption('tr[data-line="ivmix-piece"] .ln-unit', 'dozen');
+  await page.waitForTimeout(900);
+  const afterSwitch = await page.evaluate(() =>
+    document.querySelector('tr[data-line="ivmix-piece"] td[data-bulk-price]')?.dataset.label);
+  check('switching that row to dozen moves its label with it',
+        afterSwitch === 'سعر الدستة', afterSwitch);
+
   // ---------- an invoice line follows a link made elsewhere ----------
   // Reported: linking the item from the supplier's screen left the invoice
   // line saying "غير مرتبط" — the only way out was to delete it and type
