@@ -231,4 +231,21 @@ store('invoiceReviewItems').set('ivlink-1', {
   supplierItemId: 'siunlinked', qty: 3, unitKey: 'piece', price: 20, createdAt: iso('2026-08-02'),
 });
 
+// One invoice mixing units, the shape that mislabelled a row: the column
+// is named after the dozen line, and the piece line beside it is not a
+// dozen price.
+store('invoiceReviews').set('ivmix', {
+  id: 'ivmix', reviewNumber: 'INV-2026-00034', supplierId: 's2', supplierName: 'مورد النور',
+  invoiceNumber: 'F34', erpEntered: false, erpEnteredAt: null, photo: null,
+  createdAt: iso('2026-08-02'), updatedAt: iso('2026-08-02'),
+});
+store('invoiceReviewItems').set('ivmix-dozen', {
+  id: 'ivmix-dozen', reviewId: 'ivmix', itemName: 'سفنجة مشجره', erpItemId: 'e22',
+  supplierItemId: null, qty: 50, unitKey: 'dozen', price: 1320, createdAt: iso('2026-08-02'),
+});
+store('invoiceReviewItems').set('ivmix-piece', {
+  id: 'ivmix-piece', reviewId: 'ivmix', itemName: 'ميسي شيفون مستورد', erpItemId: 'e23',
+  supplierItemId: null, qty: 30, unitKey: 'piece', price: 205, createdAt: iso('2026-08-03'),
+});
+
 store('counters').set('INV-2026', { name: 'INV-2026', value: 30 });
