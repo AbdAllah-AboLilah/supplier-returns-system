@@ -1350,6 +1350,28 @@ try {
         phoneCard.widths.length >= 5 && new Set(phoneCard.widths).size === 1 && Math.max(...phoneCard.heights) < 80,
         JSON.stringify(phoneCard));
 
+  // Nothing may be wider than the phone it is on. The supplier page's three
+  // header buttons could not wrap and ran 59px off the side, dragging the
+  // whole page sideways — the add-item window with it — and in a return's
+  // card the resolution select and the "⏳ لسه" button sat side by side,
+  // 19px past the card's edge. Checked at 360px, the narrowest common phone.
+  await page.setViewportSize({ width: 360, height: 800 });
+  const sideways = {};
+  for (const url of ['/suppliers/s1', '/returns/r1']) {
+    await goto(url);
+    await page.waitForTimeout(900);
+    sideways[url] = await page.evaluate(() => ({
+      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      waitingButton: !!document.querySelector('.line-toggle-received'),
+    }));
+  }
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.waitForTimeout(200);
+  check('no screen runs off the side of a phone',
+        sideways['/suppliers/s1'].overflow <= 0 && sideways['/returns/r1'].overflow <= 0
+        && sideways['/returns/r1'].waitingButton,
+        JSON.stringify(sideways));
+
   // ---------- every row is labelled by its own unit ----------
   // Reported from a phone: a line entered by the piece read
   // "سعر الدستة: 205" beside a price that was, correctly, 205 a piece.

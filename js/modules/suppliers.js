@@ -166,7 +166,7 @@ export async function renderSupplierDetail(container, supplierId) {
         <h2 style="margin:0 0 4px;font-size:19px;">${escapeHtml(supplier.name)}</h2>
         <div class="small text-muted">${escapeHtml(supplier.contact || 'لا توجد بيانات اتصال')}</div>
       </div>
-      <div class="flex gap-8">
+      <div class="flex gap-8" style="flex-wrap:wrap;">
         <button class="btn btn-ghost" id="btn-edit-supplier">تعديل بيانات المورد</button>
         <button class="btn btn-primary" id="btn-new-return-here">+ مرتجعة جديدة</button>
         <button class="btn btn-danger" id="btn-delete-supplier">حذف المورد</button>

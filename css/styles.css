@@ -620,6 +620,7 @@ textarea{ resize:vertical; min-height:70px; }
      above size the input instead sent it to its own intrinsic width and
      straight out through the side of the card. */
   table.data-table td span.num-field > input{ width:100%; max-width:none; }
+  table.data-table td .resolution-cell{ align-items:flex-end; }
   table.data-table tfoot tr{ background:none; border:none; padding:8px 0 0; }
   table.data-table tfoot td{ border-bottom:none; }
   .table-toolbar{ flex-wrap:wrap; }
@@ -647,6 +648,11 @@ textarea{ resize:vertical; min-height:70px; }
    kept on one line so the stacked mobile layout does not split them. */
 .cost-cell{ display:inline-flex; align-items:center; gap:6px; }
 .cost-cell .line-refresh-cost{ padding:4px 8px; line-height:1; }
+/* The resolution select and, on an exchange, whether the replacement has
+   come back — one column, so on a phone the pair sits together at the end
+   of the card row. Side by side there, the "⏳ لسه" button ran 19px out
+   through the side of the card. */
+.resolution-cell{ display:flex; flex-direction:column; align-items:flex-start; }
 
 /* Says what the "إضافة / تعديل صنف عند المورد" dialog is about to do —
    edit the row that was picked, or add another under the same name. */
