@@ -685,7 +685,7 @@ export async function renderReturnDetail(container, returnId) {
             </select>
           </div>
           <div class="field" style="flex:0 0 110px;"><label>التكلفة</label>${numberField({ id: 'add-item-cost', min: 0, step: '0.01', placeholder: '0.00' })}</div>
-          <div class="field" style="flex:0 0 110px;"><label>الإجمالي</label><div class="field-readout" id="add-item-total">0.00</div></div>
+          <div class="field" style="flex:0 0 120px;"><label>الإجمالي</label><div class="field-readout" id="add-item-total">0.00</div></div>
           <div class="field" style="flex:0 0 auto;"><button class="btn btn-primary" id="btn-add-item">+ إضافة</button></div>
         </div>
       </div>` : ''}

@@ -1319,6 +1319,37 @@ try {
         JSON.stringify(partialCommit));
   await page.evaluate(() => { const el = document.querySelector('#add-price'); el.blur(); el.value = ''; });
 
+  // ---------- the add card, laid out ----------
+  // The units link sat pressed against its label ("الوحدةإدارة الوحدات"),
+  // and on a phone the add card came apart: the flex sizes written on each
+  // field are widths side by side, but stacked they turned into heights —
+  // a 130px-tall price field, most of it empty — and the row's
+  // align-items:flex-end shrank every field to its own ragged width.
+  const unitRow = await page.evaluate(() => {
+    const row = document.querySelector('#btn-manage-units').closest('.field-label-row');
+    const label = row.querySelector('label').getBoundingClientRect();
+    const link = row.querySelector('a');
+    const box = link.getBoundingClientRect();
+    const pad = parseFloat(window.getComputedStyle(link).paddingRight);     // inline-start, in RTL
+    return { gap: Math.round(label.left - (box.right - pad)), sameLine: Math.abs(label.top - box.top) < 6 };
+  });
+  check('the units link has room beside its label',
+        unitRow.gap >= 8 && unitRow.sameLine, JSON.stringify(unitRow));
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(200);
+  const phoneCard = await page.evaluate(() => {
+    const fields = [...document.querySelectorAll('.card-pad:has(#add-qty) .form-row > .field')];
+    return {
+      widths: fields.map(f => Math.round(f.getBoundingClientRect().width)),
+      heights: fields.map(f => Math.round(f.getBoundingClientRect().height)),
+    };
+  });
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.waitForTimeout(200);
+  check('on a phone every add-card field is a full row at its own height',
+        phoneCard.widths.length >= 5 && new Set(phoneCard.widths).size === 1 && Math.max(...phoneCard.heights) < 80,
+        JSON.stringify(phoneCard));
+
   // ---------- every row is labelled by its own unit ----------
   // Reported from a phone: a line entered by the piece read
   // "سعر الدستة: 205" beside a price that was, correctly, 205 a piece.

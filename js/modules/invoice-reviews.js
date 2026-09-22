@@ -552,12 +552,12 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
             <div class="hint" id="add-item-supplier-hint"${review.supplierId ? ' style="display:none;"' : ''}>اختار المورد فوق عشان تقدر تختار من أصنافه أو تضيف صنف جديد ليه.</div>
           </div>
           <div class="field" style="flex:0 0 90px;"><label>الكمية</label>${numberField({ id: 'add-qty', min: 0, step: 'any', placeholder: '0' })}</div>
-          <div class="field" style="flex:0 0 120px;">
+          <div class="field" style="flex:0 0 140px;">
             <div class="field-label-row"><label style="margin:0;">الوحدة</label><a href="#" id="btn-manage-units" class="small">إدارة الوحدات</a></div>
             <select id="add-unit">${units.map(u => `<option value="${u.key}">${escapeHtml(u.label)}</option>`).join('')}</select>
           </div>
           <div class="field" style="flex:0 0 130px;"><label id="add-price-label">سعر الوحدة</label>${numberField({ id: 'add-price', min: 0, step: '0.01', placeholder: '0.00' })}</div>
-          <div class="field" style="flex:0 0 110px;"><label>الإجمالي</label><div class="field-readout" id="add-total">0.00</div></div>
+          <div class="field" style="flex:0 0 120px;"><label>الإجمالي</label><div class="field-readout" id="add-total">0.00</div></div>
           <div class="field" style="flex:0 0 auto;"><button class="btn btn-primary" id="btn-add-line">+ إضافة</button></div>
         </div>
       </div>
