@@ -55,11 +55,30 @@ export function debounce(fn, wait = 250) {
   };
 }
 
+// One numeral system, in both directions. Everything the app *prints* is
+// already Latin (see NUM_LOCALE), but an Arabic keyboard types ٠١٢٣ and
+// those are different characters: searching "١٢" found nothing in "كريب
+// سادة 12", a barcode typed that way could never be found again, and the
+// number-to-words tool refused the input outright. Folded here so the two
+// ways of writing a number mean the same thing wherever one is read.
+// Covers Arabic-Indic (٠-٩) and the Extended set (۰-۹) some keyboards
+// send, plus the Arabic decimal and thousands marks.
+const DIGIT_FOLD = {
+  '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4', '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9',
+  '۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4', '۵': '5', '۶': '6', '۷': '7', '۸': '8', '۹': '9',
+  '٫': '.', '٬': '',
+};
+
+export function toLatinDigits(str) {
+  if (str === null || str === undefined) return '';
+  return String(str).replace(/[٠-٩۰-۹٫٬]/g, (ch) => DIGIT_FOLD[ch] ?? ch);
+}
+
 export function normalizeArabic(str) {
   // Loose normalization to make matching/search forgiving of
   // common Arabic typing variants (alef forms, ya/alef-maqsura, ta-marbuta, tatweel, diacritics).
   if (!str) return '';
-  return String(str)
+  return toLatinDigits(str)
     .replace(/[\u064B-\u0652]/g, '')      // diacritics
     .replace(/\u0640/g, '')                // tatweel
     .replace(/[إأآا]/g, 'ا')

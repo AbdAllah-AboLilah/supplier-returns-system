@@ -1065,6 +1065,40 @@ try {
           landed.lineErp === 'e45' && landed.itemErp === 'e45', JSON.stringify(landed));
   }
 
+  // ---------- one numeral system, both directions ----------
+  // Everything the app prints is Latin. What it *accepted* was not: an
+  // Arabic keyboard types ٠١٢٣ and those are different characters, so a
+  // search for "١٢" missed "كريب سادة 12" entirely.
+  const digitFold = await page.evaluate(async () => {
+    const utils = await import('/js/core/utils.js');
+    const { fuzzyIncludes, fmtMoney, fmtInt, fmtDate } = utils;
+    const { numberToArabicWords } = await import('/js/modules/invoice-reviews.js');
+    // Reached for rather than destructured, so a build without it fails
+    // these checks on what it does rather than crashing the suite.
+    const fold = utils.toLatinDigits || (() => '(no fold)');
+    return {
+      fold: fold('١٢٣٤٥٦٧٨٩٠'),
+      extended: fold('۱۲۳'),
+      decimal: fold('٩٠٬٥٨٠٫٥٠'),
+      searchLatin: fuzzyIncludes('كريب سادة 12', '12'),
+      searchArabic: fuzzyIncludes('كريب سادة 12', '١٢'),
+      barcodeArabic: fuzzyIncludes('946343620', '٩٤٦٣٤'),
+      words: numberToArabicWords('١٢٣'),
+      // and what it prints stays Latin
+      printed: `${fmtMoney(90580.5)} ${fmtInt(1062)} ${fmtDate('2026-09-22T08:05:00Z')}`,
+    };
+  });
+  check('Arabic-Indic digits are read as the same number',
+        digitFold.fold === '1234567890' && digitFold.extended === '123' && digitFold.decimal === '90580.50',
+        JSON.stringify({ fold: digitFold.fold, extended: digitFold.extended, decimal: digitFold.decimal }));
+  check('so searching finds the item whichever way the number is typed',
+        digitFold.searchLatin && digitFold.searchArabic && digitFold.barcodeArabic,
+        JSON.stringify(digitFold));
+  check('and the number-to-words tool accepts them instead of refusing',
+        digitFold.words === 'مائة وثلاثة وعشرون', digitFold.words);
+  check('what the app prints is still one numeral system',
+        !/[٠-٩۰-۹]/.test(digitFold.printed), digitFold.printed);
+
   // ---------- every row is labelled by its own unit ----------
   // Reported from a phone: a line entered by the piece read
   // "سعر الدستة: 205" beside a price that was, correctly, 205 a piece.
