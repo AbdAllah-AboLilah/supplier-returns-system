@@ -15,6 +15,7 @@ export default [
         setTimeout: 'readonly', clearTimeout: 'readonly', setInterval: 'readonly', clearInterval: 'readonly',
         Blob: 'readonly', File: 'readonly', FileReader: 'readonly', Image: 'readonly', URL: 'readonly',
         CSS: 'readonly', MutationObserver: 'readonly', crypto: 'readonly', Event: 'readonly',
+        HTMLInputElement: 'readonly',
         // loaded globally from index.html
         XLSX: 'readonly', html2canvas: 'readonly',
         // service worker

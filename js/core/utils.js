@@ -55,11 +55,59 @@ export function debounce(fn, wait = 250) {
   };
 }
 
+// One numeral system, in both directions. Everything the app *prints* is
+// already Latin (see NUM_LOCALE), but an Arabic keyboard types ٠١٢٣ and
+// those are different characters: searching "١٢" found nothing in "كريب
+// سادة 12", a barcode typed that way could never be found again, and the
+// number-to-words tool refused the input outright. Folded here so the two
+// ways of writing a number mean the same thing wherever one is read.
+// Covers Arabic-Indic (٠-٩) and the Extended set (۰-۹) some keyboards
+// send, plus the Arabic decimal and thousands marks.
+const DIGIT_FOLD = {
+  '٠': '0', '١': '1', '٢': '2', '٣': '3', '٤': '4', '٥': '5', '٦': '6', '٧': '7', '٨': '8', '٩': '9',
+  '۰': '0', '۱': '1', '۲': '2', '۳': '3', '۴': '4', '۵': '5', '۶': '6', '۷': '7', '۸': '8', '۹': '9',
+  '٫': '.', '٬': '',
+};
+
+export function toLatinDigits(str) {
+  if (str === null || str === undefined) return '';
+  return String(str).replace(/[٠-٩۰-۹٫٬]/g, (ch) => DIGIT_FOLD[ch] ?? ch);
+}
+
+// One numeral system at the keyboard, too. An Arabic keyboard sends ٠١٢٣
+// and <input type="number"> refuses them outright: the keystrokes vanish
+// and the field stays empty, which reads as the app ignoring what you
+// typed. They are rewritten to Latin as they arrive, so either keyboard
+// types the same number.
+//
+// Buffered, because a number field blanks its own value at an unfinished
+// step: typing "١٢٣٫٥" passes through "123." which is not yet a number, so
+// reading the field back at that moment gives nothing. The buffer keeps
+// what has been typed until it is a number again. Latin typing, editing
+// keys and every other kind of field go through untouched.
+export function wireArabicNumberInput(root = document) {
+  const forget = (el) => { if (el && el.dataset) delete el.dataset.numBuf; };
+  root.addEventListener('beforeinput', (e) => {
+    const el = e.target;
+    if (!(el instanceof HTMLInputElement) || el.type !== 'number') return;
+    if (!e.data) { forget(el); return; }           // delete, paste of nothing, composition
+    const latin = toLatinDigits(e.data);
+    if (latin === e.data) { forget(el); return; }  // already Latin — leave it alone
+    e.preventDefault();
+    const next = (el.dataset.numBuf ?? el.value) + latin;
+    el.dataset.numBuf = next;
+    el.value = next;
+    // Mid-decimal the field reads empty; don't tell autosave the value is 0.
+    if (el.value !== '') el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  root.addEventListener('blur', (e) => forget(e.target), true);
+}
+
 export function normalizeArabic(str) {
   // Loose normalization to make matching/search forgiving of
   // common Arabic typing variants (alef forms, ya/alef-maqsura, ta-marbuta, tatweel, diacritics).
   if (!str) return '';
-  return String(str)
+  return toLatinDigits(str)
     .replace(/[\u064B-\u0652]/g, '')      // diacritics
     .replace(/\u0640/g, '')                // tatweel
     .replace(/[إأآا]/g, 'ا')

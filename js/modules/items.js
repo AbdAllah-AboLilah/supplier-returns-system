@@ -6,7 +6,7 @@
 import { getAll, getById, put, remove } from '../core/db.js';
 import { uid, nowIso, fmtMoney, fmtInt, escapeHtml, debounce, fuzzyIncludes,
          openModal, confirmDialog, toast, paginate, renderPagination, qs,
-         renderPreservingFocus, guarded } from '../core/utils.js';
+         renderPreservingFocus, guarded, toLatinDigits } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
 import { autosaveField } from '../core/autosave.js';
 import { listErpSupplierRelations, unlinkAllSuppliersFromErpItem } from './item-links.js';
@@ -237,7 +237,9 @@ function openItemForm(container, itemId) {
       const record = {
         id: recordId || uid(),
         name,
-        barcode: qs('#f-barcode', node).value.trim(),
+        // Stored in one numeral system whatever the keyboard sent, or the
+        // barcode could never be found by anyone searching for it.
+        barcode: toLatinDigits(qs('#f-barcode', node).value.trim()),
         baseCost: Number(qs('#f-cost', node).value) || 0,
         category: qs('#f-category', node).value.trim(),
         createdAt: recordId ? (existing?.createdAt || nowIso()) : nowIso(),

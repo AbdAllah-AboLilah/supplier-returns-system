@@ -16,7 +16,7 @@ import { getAll, getById, put, bulkPut, remove, getByIndex, removeWhere, nextSeq
 import { uid, nowIso, fmtMoney, fmtInt, fmtDate, escapeHtml, fuzzyIncludes, debounce,
          openModal, confirmDialog, toast, paginate, renderPagination, qs, qsa,
          renderPreservingFocus, guarded, closeOnOutsideClick, printHtmlDocument, submitOnce,
-         renderPickedErp } from '../core/utils.js';
+         renderPickedErp, toLatinDigits } from '../core/utils.js';
 import { autosaveField } from '../core/autosave.js';
 import { navigate } from '../core/router.js';
 import { openSupplierForm } from './suppliers.js';
@@ -130,7 +130,9 @@ function group(n, s, d, p) {
   return u1000(n) + ' ' + s;
 }
 export function numberToArabicWords(value) {
-  value = String(value).replace(/[,\s]/g, '');
+  // Typed on an Arabic keyboard, "١٢٣" is not "123" — it used to be
+  // refused as "not a number".
+  value = toLatinDigits(value).replace(/[,\s]/g, '');
   if (!/^\d+$/.test(value)) return 'من فضلك أدخل رقمًا صحيحًا فقط.';
   value = value.replace(/^0+/, '') || '0';
   if (value === '0') return 'صفر';
