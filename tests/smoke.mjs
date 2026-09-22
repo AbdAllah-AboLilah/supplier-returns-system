@@ -1099,6 +1099,36 @@ try {
   check('what the app prints is still one numeral system',
         !/[٠-٩۰-۹]/.test(digitFold.printed), digitFold.printed);
 
+  // An Arabic keyboard typing into a real quantity field. A number input
+  // refuses ٠١٢٣ outright — the keystrokes vanish and the field stays
+  // empty, which reads as the app ignoring what was typed.
+  await goto('/invoice-reviews/ivmix');
+  await page.waitForTimeout(900);
+  await page.fill('#add-qty', '');
+  await page.click('#add-qty');
+  await page.keyboard.type('٣٠', { delay: 40 });
+  await page.waitForTimeout(200);
+  const arabicQty = await page.$eval('#add-qty', el => el.value);
+  await page.fill('#add-price', '');
+  await page.click('#add-price');
+  await page.keyboard.type('٢٠٥٫٥', { delay: 40 }); // through an unfinished "205."
+  await page.waitForTimeout(200);
+  const arabicPrice = await page.$eval('#add-price', el => el.value);
+  await page.waitForTimeout(400);
+  const arabicTotal = await page.$eval('#add-total', el => el.textContent.trim());
+  check('a quantity typed on an Arabic keyboard lands as a number',
+        arabicQty === '30' && arabicPrice === '205.5' && arabicTotal === '6,165.00',
+        JSON.stringify({ arabicQty, arabicPrice, arabicTotal }));
+
+  // Latin typing is untouched.
+  await page.fill('#add-qty', '');
+  await page.click('#add-qty');
+  await page.keyboard.type('12.5', { delay: 30 });
+  const latinQty = await page.$eval('#add-qty', el => el.value);
+  check('and typing the same number in Latin still works', latinQty === '12.5', latinQty);
+  await page.fill('#add-qty', '');
+  await page.fill('#add-price', '');
+
   // ---------- every row is labelled by its own unit ----------
   // Reported from a phone: a line entered by the piece read
   // "سعر الدستة: 205" beside a price that was, correctly, 205 a piece.
