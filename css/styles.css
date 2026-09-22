@@ -402,11 +402,6 @@ input:focus, select:focus, textarea:focus{ border-color:var(--gold); }
    dashed and tinted because there is nothing to type into it. */
 .field-readout{
   width:100%;
-  /* The add rows set align-items:flex-end, which on a phone (where the row
-     becomes a column) makes every field shrink to its content — an input
-     still has its own intrinsic width, a div holding "10.00" does not. The
-     minimum keeps this reading as a field rather than a stray number. */
-  min-width:120px;
   box-sizing:border-box;
   padding:9px 12px;
   border:1px dashed var(--line-strong);
@@ -561,7 +556,10 @@ textarea{ resize:vertical; min-height:70px; }
 .autosave-status.saved{ color:var(--teal); }
 .autosave-status.error{ color:var(--red); }
 .autosave-status:empty{ opacity:0; }
-.field-label-row{ display:flex; align-items:center; }
+.field-label-row{ display:flex; align-items:center; flex-wrap:wrap; }
+/* A link in a field's label row (إدارة الوحدات) sits at the far end,
+   never pressed up against the label it belongs beside. */
+.field-label-row > a{ margin-inline-start:auto; padding-inline-start:8px; white-space:nowrap; }
 
 /* Fallback cost (system default, not a confirmed supplier price) */
 .cost-fallback{ border-color:var(--red) !important; color:var(--red); background:var(--red-tint); font-weight:700; }
@@ -580,6 +578,13 @@ textarea{ resize:vertical; min-height:70px; }
   #menu-toggle{ display:block; }
   #app-content{ padding:16px; }
   .form-row{ flex-direction:column; gap:0; }
+  /* Stacked, every field is a full row of its own. The flex sizes written
+     on them are widths for the side-by-side row; in a column that same
+     flex-basis turns into a height — a 130px-tall price field, most of it
+     empty — and the add rows' align-items:flex-end shrank every field to
+     its content, so a phone got a ragged card full of holes. */
+  .form-row{ align-items:stretch !important; }
+  .form-row > .field{ flex:0 0 auto !important; }
 }
 
 /* Below this width, every table.data-table becomes a stack of cards
