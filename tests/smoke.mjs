@@ -1065,6 +1065,65 @@ try {
           landed.lineErp === 'e45' && landed.itemErp === 'e45', JSON.stringify(landed));
   }
 
+  // ---------- a price list for a supplier ----------
+  await goto('/suppliers/s2');
+  await page.waitForTimeout(1400);
+  const exportCard = await page.evaluate(() => ({
+    present: !!document.querySelector('#si-export'),
+    columns: Array.from(document.querySelectorAll('.si-col-toggle')).map(cb => ({ key: cb.value, checked: cb.checked })),
+    buttons: ['#btn-si-copy', '#btn-si-img', '#btn-si-whatsapp', '#btn-si-print'].filter(s => document.querySelector(s)).length,
+  }));
+  check('the supplier items screen offers a report of its own',
+        exportCard.present && exportCard.buttons === 4
+        && exportCard.columns.length === 4 && exportCard.columns.every(c => c.checked),
+        JSON.stringify(exportCard));
+
+  const priceList = await page.evaluate(async () => {
+    const m = await import('/js/modules/supplier-items-export.js');
+    const supplier = { id: 's2', name: 'مورد النور' };
+    const rows = [
+      { supplierItemName: 'كريب سادة', erpItemName: 'صنف ERP رقم 19', erpBarcode: '62000019', currentCost: 38 },
+      { supplierItemName: 'صنف لسه مش مربوط', erpItemName: '', erpBarcode: '', currentCost: 0 },
+    ];
+    const spec = m.buildSupplierItemsReportSpec(supplier, rows, undefined, 'محل النور');
+    const receipt = new DOMParser().parseFromString(
+      m.buildSupplierItemsReceipt(supplier, rows, undefined, 'محل النور'), 'text/html');
+    const namesOnly = m.buildSupplierItemsReportSpec(supplier, rows, ['supplierName', 'cost']);
+    return {
+      title: spec.title,
+      subtitle: spec.subtitle,
+      columns: spec.columns.map(c => c.key),
+      firstRow: spec.rows[0],
+      unlinkedRow: spec.rows[1],
+      footer: `${spec.footerRight} · ${spec.footerLeft}`,
+      narrowed: namesOnly.columns.map(c => c.key),
+      receiptTitle: receipt.querySelector('.tp-title')?.textContent.trim(),
+      receiptShop: receipt.querySelector('.tp-shop')?.textContent.trim(),
+      receiptCells: Array.from(receipt.querySelectorAll('.tp-item .tp-row td')).map(e => e.textContent.trim()),
+      text: m.supplierItemsText(supplier, rows),
+    };
+  });
+  check('the report carries the supplier name, the ERP name and the price',
+        priceList.title === 'أصناف المورد وأسعارها'
+        && priceList.subtitle === 'مورد النور'
+        && priceList.columns.join(',') === 'supplierName,erpName,barcode,cost'
+        && priceList.firstRow.supplierName === 'كريب سادة'
+        && priceList.firstRow.erpName === 'صنف ERP رقم 19'
+        && priceList.firstRow.cost === '38.00',
+        JSON.stringify({ cols: priceList.columns, row: priceList.firstRow }));
+  check('an item with no price says so instead of showing a zero',
+        priceList.unlinkedRow.cost === 'لم تُحدَّد'
+        && priceList.unlinkedRow.erpName === 'غير مرتبط'
+        && priceList.footer.includes('1 منها بدون تكلفة'),
+        JSON.stringify({ row: priceList.unlinkedRow, footer: priceList.footer }));
+  check('columns can be left out, and it prints as the same receipt',
+        priceList.narrowed.join(',') === 'supplierName,cost'
+        && priceList.receiptTitle === 'أصناف المورد وأسعارها'
+        && priceList.receiptShop === 'محل النور'
+        && priceList.receiptCells.includes('التكلفة: 38.00')
+        && priceList.text.includes('التكلفة: 38.00'),
+        JSON.stringify({ narrowed: priceList.narrowed, cells: priceList.receiptCells }));
+
   // ---------- one numeral system, both directions ----------
   // Everything the app prints is Latin. What it *accepted* was not: an
   // Arabic keyboard types ٠١٢٣ and those are different characters, so a

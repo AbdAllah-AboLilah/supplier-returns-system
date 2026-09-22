@@ -13,6 +13,7 @@ import { getAll, getById, getByIndex, put, bulkPut, remove, removeWhere } from '
 import { uid, nowIso, fmtMoney, fmtInt, fmtDate, escapeHtml, fuzzyIncludes, normalizeArabic, debounce,
          openModal, confirmDialog, toast, qs, closeOnOutsideClick, guarded, submitOnce } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
+import { supplierItemsExportHtml, wireSupplierItemsExport } from './supplier-items-export.js';
 import { findErpItems } from './item-links.js';
 import { getUnits, multiplierOf } from '../core/units.js';
 
@@ -237,7 +238,17 @@ export async function renderSupplierItemsPanel(container, supplierId) {
         <div class="empty-hint">${allRows.length ? 'جرّب مسح الفلاتر' : 'أضفها هنا أو ستُضاف تلقائيًا أول مرة تكتبها داخل مرتجعة'}</div>
       </div>`}
     </div>
+    ${supplierItemsExportHtml(rows.length)}
   `;
+
+  // The report is built from what is on screen, with the ERP item resolved
+  // so a price list can name it rather than just point at an id.
+  const supplier = await getById('suppliers', supplierId);
+  wireSupplierItemsExport(container, supplier, rows.map(r => ({
+    ...r,
+    erpItemName: r.erpItemId ? (erpById[r.erpItemId]?.name || '') : '',
+    erpBarcode: r.erpItemId ? (erpById[r.erpItemId]?.barcode || '') : '',
+  })));
 
   qs('#f-unlinked', container)?.addEventListener('change', (e) => { panelState.unlinkedOnly = e.target.checked; renderSupplierItemsPanel(container, supplierId); });
   qs('#f-nocost', container)?.addEventListener('change', (e) => { panelState.noCostOnly = e.target.checked; renderSupplierItemsPanel(container, supplierId); });
