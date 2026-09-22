@@ -12,11 +12,11 @@ export function nowIso() {
 }
 
 // Arabic locale, Latin digits. Plain 'ar-EG' formats with Arabic-Indic
-// numerals (١٩٠٠٫٠٠), but <input type="number"> always shows Latin ones
-// whatever the locale — so the same figure appeared as ١٩ in the box you
-// type in and ١٩٠٠٫٠٠ in the total beside it, and the Arabic thousands
-// and decimal marks (٬ ٫) are easy to confuse with each other. One
-// numeral system across every screen, export and printout.
+// numerals (١٩٠٠٫٠٠), whose thousands and decimal marks (٬ ٫) are easy to
+// confuse with each other, and which read as a different set of figures
+// again next to the ones typed into a field. One numeral system across
+// every screen, export and printout — and numberField() below is the
+// other half of that, for the figures you type rather than read.
 const NUM_LOCALE = 'ar-EG-u-nu-latn';
 
 export function fmtDate(iso, withTime = false) {
@@ -74,33 +74,167 @@ export function toLatinDigits(str) {
   return String(str).replace(/[٠-٩۰-۹٫٬]/g, (ch) => DIGIT_FOLD[ch] ?? ch);
 }
 
-// One numeral system at the keyboard, too. An Arabic keyboard sends ٠١٢٣
-// and <input type="number"> refuses them outright: the keystrokes vanish
-// and the field stays empty, which reads as the app ignoring what you
-// typed. They are rewritten to Latin as they arrive, so either keyboard
-// types the same number.
+// A field you type a number into. Not <input type="number">: that one
+// draws its value in the browser's own language, so on an Arabic Chrome
+// the 1100 you just typed reads back ١١٠٠ — and ١٦٫٥ with an Arabic
+// decimal mark — right beside a total the app itself wrote as 1,100.00.
+// Nothing on the page can turn that off; it follows the browser, not the
+// page's lang. So the value is ours to draw and it is Latin everywhere,
+// the way every printed figure already is.
 //
-// Buffered, because a number field blanks its own value at an unfinished
-// step: typing "١٢٣٫٥" passes through "123." which is not yet a number, so
-// reading the field back at that moment gives nothing. The buffer keeps
-// what has been typed until it is a number again. Latin typing, editing
-// keys and every other kind of field go through untouched.
-export function wireArabicNumberInput(root = document) {
-  const forget = (el) => { if (el && el.dataset) delete el.dataset.numBuf; };
+// inputmode="decimal" keeps the numeric keypad on a phone, the filter in
+// wireNumericFields() keeps anything that isn't a number out, and the
+// spinner the native field used to draw is rebuilt as two buttons — which
+// a phone can use too, where the native one never appeared at all.
+export function numberField({
+  value = '', id = '', cls = '', placeholder = '', min = null, max = null,
+  step = 'any', width = '', align = '', title = '', attrs = '',
+} = {}) {
+  const parts = ['type="text"', 'inputmode="decimal"', 'data-numeric="1"', `data-step="${escapeHtml(String(step))}"`];
+  if (min !== null && min !== '') parts.push(`data-min="${escapeHtml(String(min))}"`);
+  if (max !== null && max !== '') parts.push(`data-max="${escapeHtml(String(max))}"`);
+  if (id) parts.push(`id="${escapeHtml(id)}"`);
+  if (cls) parts.push(`class="${escapeHtml(cls.trim())}"`);
+  if (placeholder) parts.push(`placeholder="${escapeHtml(placeholder)}"`);
+  if (title) parts.push(`title="${escapeHtml(title)}"`);
+  if (align) parts.push(`style="text-align:${escapeHtml(align)};"`);
+  if (attrs) parts.push(attrs);
+  parts.push(`value="${escapeHtml(value === null || value === undefined ? '' : String(value))}"`);
+  return `<span class="num-field"${width ? ` style="width:${escapeHtml(width)};"` : ''}>`
+    + `<input ${parts.join(' ')}>`
+    + '<span class="num-spin">'
+    + '<button type="button" class="num-step" data-dir="1" tabindex="-1" aria-label="زيادة">▲</button>'
+    + '<button type="button" class="num-step" data-dir="-1" tabindex="-1" aria-label="نقصان">▼</button>'
+    + '</span></span>';
+}
+
+// Anything that is still a number while it is being typed: "", "12",
+// "12.", "12.5", ".5". Kept deliberately loose — a half-typed decimal is
+// not an error, it is someone mid-word.
+const PARTIAL_NUMBER = /^\d*\.?\d*$/;
+
+function isNumericField(el) {
+  return el instanceof HTMLInputElement && el.dataset && el.dataset.numeric !== undefined;
+}
+
+function fieldBound(el, key) {
+  const raw = el.dataset[key];
+  if (raw === undefined || raw === '') return null;
+  const n = Number(toLatinDigits(raw));
+  return Number.isFinite(n) ? n : null;
+}
+
+// One press of an arrow, one notch of the wheel, one tap of the spinner.
+// step="any" (a quantity) moves by one; a price moves by its own step, so
+// the figures stay on the same precision instead of drifting into
+// 1100.0000000000002.
+function stepNumericField(el, dir) {
+  const declared = Number(toLatinDigits(el.dataset.step || ''));
+  const step = Number.isFinite(declared) && declared > 0 ? declared : 1;
+  const current = Number(toLatinDigits(el.value));
+  const from = Number.isFinite(current) ? current : 0;
+  const decimals = (String(step).split('.')[1] || '').length;
+  let next = Number((from + dir * step).toFixed(decimals));
+  const min = fieldBound(el, 'min');
+  const max = fieldBound(el, 'max');
+  if (min !== null && next < min) next = min;
+  if (max !== null && next > max) next = max;
+  const text = String(next);
+  if (text === el.value) return;
+  el.value = text;
+  // What a native number field fires when its arrows are used: the first
+  // drives the running totals and the autosave debounce, the second is
+  // what pushes a price out as the supplier's cost.
+  el.dispatchEvent(new Event('input', { bubbles: true }));
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+// One numeral system at the keyboard, too. An Arabic keyboard sends ٠١٢٣
+// and those are different characters: they used to vanish on the way into
+// a number field, which read as the app ignoring what was typed. They are
+// rewritten to Latin as they arrive, so either keyboard types the same
+// number — and since the field is a text field now, the filter here is
+// also what keeps letters out of it.
+export function wireNumericFields(root = document) {
   root.addEventListener('beforeinput', (e) => {
     const el = e.target;
-    if (!(el instanceof HTMLInputElement) || el.type !== 'number') return;
-    if (!e.data) { forget(el); return; }           // delete, paste of nothing, composition
-    const latin = toLatinDigits(e.data);
-    if (latin === e.data) { forget(el); return; }  // already Latin — leave it alone
+    if (!isNumericField(el)) return;
+    const incoming = e.data !== null && e.data !== undefined
+      ? e.data
+      : (e.dataTransfer ? e.dataTransfer.getData('text') : '');
+    if (!incoming) return;                       // backspace, delete, cut — nothing to vet
+    const cleaned = toLatinDigits(incoming).replace(/[^\d.]/g, '');
+    const start = el.selectionStart === null ? el.value.length : el.selectionStart;
+    const end = el.selectionEnd === null ? el.value.length : el.selectionEnd;
+    const next = el.value.slice(0, start) + cleaned + el.value.slice(end);
+    const ok = PARTIAL_NUMBER.test(next);
+    if (cleaned === incoming && ok) return;      // plain Latin, still a number — leave it alone
     e.preventDefault();
-    const next = (el.dataset.numBuf ?? el.value) + latin;
-    el.dataset.numBuf = next;
+    if (!cleaned || !ok) return;                 // a letter, a second decimal point — dropped
     el.value = next;
-    // Mid-decimal the field reads empty; don't tell autosave the value is 0.
-    if (el.value !== '') el.dispatchEvent(new Event('input', { bubbles: true }));
+    const caret = start + cleaned.length;
+    try { el.setSelectionRange(caret, caret); } catch { /* field not selectable */ }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
   });
-  root.addEventListener('blur', (e) => forget(e.target), true);
+
+  root.addEventListener('keydown', (e) => {
+    if (!isNumericField(e.target)) return;
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    e.preventDefault();
+    stepNumericField(e.target, e.key === 'ArrowUp' ? 1 : -1);
+  });
+
+  // Only while the field has focus, exactly like the native one — the
+  // wheel over a table you are scrolling must stay a scroll.
+  root.addEventListener('wheel', (e) => {
+    const el = e.target;
+    if (!isNumericField(el) || !e.deltaY) return;
+    if (el.ownerDocument.activeElement !== el) return;
+    e.preventDefault();
+    stepNumericField(el, e.deltaY < 0 ? 1 : -1);
+  }, { passive: false });
+
+  // A value the person typed reaches 'change' on blur by itself. One we
+  // wrote into the field for them — a folded Arabic digit, a filtered
+  // keystroke — does not: Chrome drops its own "edited" mark the moment a
+  // script touches the value, so a price typed on an Arabic keyboard blurred
+  // without ever firing the event that pushes it out as the supplier's
+  // cost. The field remembers what it last committed and says it itself,
+  // once, and never on top of the browser's own.
+  root.addEventListener('focus', (e) => {
+    if (isNumericField(e.target)) e.target.dataset.numWas = e.target.value;
+  }, true);
+  root.addEventListener('change', (e) => {
+    if (isNumericField(e.target)) e.target.dataset.numWas = e.target.value;
+  }, true);
+  root.addEventListener('blur', (e) => {
+    const el = e.target;
+    if (!isNumericField(el)) return;
+    // "12." and ".5" are half-typed, not wrong — tidied on the way out so
+    // what stays on screen reads like the number that was saved.
+    if (el.value.endsWith('.') || el.value.startsWith('.')) {
+      const n = Number(el.value);
+      el.value = Number.isFinite(n) ? String(n) : '';
+    }
+    const was = el.dataset.numWas;
+    delete el.dataset.numWas;
+    if (was === undefined) return;
+    // By what it means, not by how it is written: tidying "12." to "12" is
+    // not a change to announce on top of the one the browser just made.
+    const sameNumber = Number(was || 0) === Number(el.value || 0) && (was === '') === (el.value === '');
+    if (!sameNumber) el.dispatchEvent(new Event('change', { bubbles: true }));
+  }, true);
+
+  root.addEventListener('click', (e) => {
+    const btn = e.target.closest ? e.target.closest('.num-step') : null;
+    if (!btn) return;
+    const el = btn.closest('.num-field')?.querySelector('input[data-numeric]');
+    if (!el) return;
+    e.preventDefault();
+    el.focus();
+    stepNumericField(el, btn.dataset.dir === '-1' ? -1 : 1);
+  });
 }
 
 export function normalizeArabic(str) {

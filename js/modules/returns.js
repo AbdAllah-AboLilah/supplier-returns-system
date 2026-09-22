@@ -11,7 +11,7 @@ import { getAll, getById, getByIndex, put, remove, removeWhere, bulkPut, generat
 import { uid, nowIso, fmtMoney, fmtDate, fmtInt, escapeHtml, fuzzyIncludes, debounce,
          openModal, confirmDialog, toast, qs, qsa, paginate, renderPagination,
          renderPickedErp,
-         renderPreservingFocus, guarded, closeOnOutsideClick, submitOnce } from '../core/utils.js';
+         renderPreservingFocus, guarded, closeOnOutsideClick, submitOnce, numberField } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
 import { navigate } from '../core/router.js';
 import { searchSupplierItems, getOrCreateSupplierItem, updateCost as updateSupplierItemCost, openLinkModal, openErpPicker } from './supplier-items.js';
@@ -632,10 +632,10 @@ export async function renderReturnDetail(container, returnId) {
             <tr data-line="${l.id}">
               <td data-label="اسم الصنف عند المورد"><b>${escapeHtml(l.supplierItemName)}</b></td>
               <td data-label="صنف النظام ERP">${l.erpItemName ? escapeHtml(l.erpItemName) : `<span class="badge badge-warn">⚠️ غير مرتبط</span> <button class="btn btn-sm btn-ghost btn-link-erp" data-supplier-item-id="${l.supplierItemId}">ربط</button>`}</td>
-              <td class="num" data-label="الكمية">${editable ? `<input type="number" min="0" step="1" class="line-qty" data-id="${l.id}" value="${l.qty}" style="width:80px;text-align:center;">` : fmtInt(l.qty)}</td>
+              <td class="num" data-label="الكمية">${editable ? numberField({ cls: 'line-qty', value: l.qty, min: 0, step: '1', width: '80px', align: 'center', attrs: `data-id="${l.id}"` }) : fmtInt(l.qty)}</td>
               <td class="num" data-label="تكلفة المورد">${editable
                 ? `<span class="cost-cell">
-                     <input type="number" min="0" step="0.01" class="line-cost ${l.costIsFallback ? 'cost-fallback' : ''}" data-id="${l.id}" value="${l.unitCost}" title="${l.costIsFallback ? 'تكلفة النظام الافتراضية — لسه محدّدتش تكلفة هذا المورد الفعلية' : ''}" style="width:100px;text-align:center;">
+                     ${numberField({ cls: `line-cost ${l.costIsFallback ? 'cost-fallback' : ''}`, value: l.unitCost, min: 0, step: '0.01', width: '105px', align: 'center', title: l.costIsFallback ? 'تكلفة النظام الافتراضية — لسه محدّدتش تكلفة هذا المورد الفعلية' : '', attrs: `data-id="${l.id}"` })}
                      <button class="btn btn-sm btn-ghost line-refresh-cost" data-id="${l.id}" title="يجيب أحدث تكلفة للصنف ده من أصناف المورد">↻</button>
                    </span>`
                 : `<span class="${l.costIsFallback ? 'cost-fallback-text' : ''}" title="${l.costIsFallback ? 'تكلفة النظام الافتراضية — لسه محدّدتش تكلفة هذا المورد الفعلية' : ''}">${fmtMoney(l.unitCost)}</span>`}</td>
@@ -677,14 +677,14 @@ export async function renderReturnDetail(container, returnId) {
             <div class="autocomplete-list" id="add-item-results" style="display:none;"></div>
             <div class="picked-erp" id="add-item-erp" style="display:none;"></div>
           </div>
-          <div class="field" style="flex:0 0 90px;"><label>الكمية</label><input type="number" id="add-item-qty" placeholder="0" min="1"></div>
+          <div class="field" style="flex:0 0 90px;"><label>الكمية</label>${numberField({ id: 'add-item-qty', placeholder: '0', min: 1, step: '1' })}</div>
           <div class="field" style="flex:0 0 60px;"><label title="ق = سعر القطعة، د = سعر الدستة (هيتحول لسعر القطعة تلقائيًا)">الوحدة</label>
             <select id="add-item-unit-type">
               <option value="piece">ق</option>
               <option value="dozen">د</option>
             </select>
           </div>
-          <div class="field" style="flex:0 0 110px;"><label>التكلفة</label><input type="number" step="0.01" id="add-item-cost" placeholder="0.00"></div>
+          <div class="field" style="flex:0 0 110px;"><label>التكلفة</label>${numberField({ id: 'add-item-cost', min: 0, step: '0.01', placeholder: '0.00' })}</div>
           <div class="field" style="flex:0 0 110px;"><label>الإجمالي</label><div class="field-readout" id="add-item-total">0.00</div></div>
           <div class="field" style="flex:0 0 auto;"><button class="btn btn-primary" id="btn-add-item">+ إضافة</button></div>
         </div>

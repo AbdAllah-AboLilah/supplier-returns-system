@@ -11,7 +11,8 @@
 // =========================================================
 import { getAll, getById, getByIndex, put, bulkPut, remove, removeWhere } from '../core/db.js';
 import { uid, nowIso, fmtMoney, fmtInt, fmtDate, escapeHtml, fuzzyIncludes, normalizeArabic, debounce,
-         openModal, confirmDialog, toast, qs, closeOnOutsideClick, guarded, submitOnce } from '../core/utils.js';
+         openModal, confirmDialog, toast, qs, closeOnOutsideClick, guarded, submitOnce,
+         numberField } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
 import { supplierItemsExportHtml, wireSupplierItemsExport } from './supplier-items-export.js';
 import { findErpItems } from './item-links.js';
@@ -279,7 +280,7 @@ function costUnitFieldsHtml(units, { label = 'التكلفة', costId = 'f-cost'
     <div class="form-row" style="align-items:flex-end;">
       <div class="field" style="flex:1;">
         <label>${escapeHtml(label)}</label>
-        <input type="number" step="0.01" min="0" id="${costId}" value="${value}" placeholder="0.00">
+        ${numberField({ id: costId, value, min: 0, step: '0.01', placeholder: '0.00' })}
       </div>
       <div class="field" style="flex:0 0 130px;">
         <label>السعر ده بالـ</label>

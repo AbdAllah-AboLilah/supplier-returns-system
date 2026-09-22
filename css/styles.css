@@ -379,6 +379,24 @@ input[type=search], select, textarea{
   color:var(--text-900);
 }
 input:focus, select:focus, textarea:focus{ border-color:var(--gold); }
+
+/* A field you type a number into. It is a text field, not the native
+   number one: that draws its value in the browser's own language, so on
+   an Arabic Chrome a quantity typed as 1100 read back ١١٠٠ beside a total
+   the app had written 1,100.00. Its spinner is rebuilt here as two
+   buttons — sized for a finger, and present on a phone, where the native
+   one was never drawn at all. */
+.num-field{ position:relative; display:inline-flex; width:100%; vertical-align:middle; }
+.num-field > input{ width:100%; padding-left:26px; }
+.num-spin{ position:absolute; left:4px; top:4px; bottom:4px; width:19px; display:flex; flex-direction:column; gap:2px; }
+.num-spin button{
+  flex:1; display:flex; align-items:center; justify-content:center;
+  padding:0; cursor:pointer; font-size:7px; line-height:1;
+  border:1px solid var(--line); border-radius:3px;
+  background:var(--paper); color:var(--text-400);
+}
+.num-spin button:hover{ background:var(--gold-tint); border-color:var(--gold); color:var(--gold-dark); }
+.num-spin button:active{ background:var(--gold); border-color:var(--gold); color:#fff; }
 /* A worked-out value sitting in a row of fields — what the line being
    typed will come to. Shaped like an input so the row still reads as one,
    dashed and tinted because there is nothing to type into it. */
@@ -587,7 +605,16 @@ textarea{ resize:vertical; min-height:70px; }
     flex-shrink:0; text-align:right;
   }
   table.data-table td:not([data-label])::before{ content:none; }
-  table.data-table td input[type=number], table.data-table td input[type=text], table.data-table td select{ width:auto; max-width:150px; }
+  table.data-table td input[type=text], table.data-table td select{ width:auto; max-width:150px; }
+  /* A finger, not a mouse pointer: the stepper gets a wider column
+     on a phone, where the native field never drew one at all. */
+  .num-field > input{ padding-left:32px; }
+  .num-spin{ width:25px; }
+  .num-spin button{ font-size:8px; }
+  /* The width belongs to the field, stepper included. Letting the rule
+     above size the input instead sent it to its own intrinsic width and
+     straight out through the side of the card. */
+  table.data-table td span.num-field > input{ width:100%; max-width:none; }
   table.data-table tfoot tr{ background:none; border:none; padding:8px 0 0; }
   table.data-table tfoot td{ border-bottom:none; }
   .table-toolbar{ flex-wrap:wrap; }

@@ -6,7 +6,7 @@
 import { getAll, getById, put, remove } from '../core/db.js';
 import { uid, nowIso, fmtMoney, fmtInt, escapeHtml, debounce, fuzzyIncludes,
          openModal, confirmDialog, toast, paginate, renderPagination, qs,
-         renderPreservingFocus, guarded, toLatinDigits } from '../core/utils.js';
+         renderPreservingFocus, guarded, toLatinDigits, numberField } from '../core/utils.js';
 import { logAction } from '../core/audit.js';
 import { autosaveField } from '../core/autosave.js';
 import { listErpSupplierRelations, unlinkAllSuppliersFromErpItem } from './item-links.js';
@@ -186,7 +186,7 @@ function openItemForm(container, itemId) {
         </div>
         <div class="form-row">
           <div class="field"><label>الباركود</label><input type="text" id="f-barcode" value="${escapeHtml(existing?.barcode || '')}"></div>
-          <div class="field"><label>التكلفة الأساسية</label><input type="number" step="0.01" id="f-cost" value="${existing?.baseCost ?? ''}"></div>
+          <div class="field"><label>التكلفة الأساسية</label>${numberField({ id: 'f-cost', min: 0, step: '0.01', value: existing?.baseCost ?? '' })}</div>
         </div>
         <div class="field"><label>القسم / التصنيف (اختياري)</label><input type="text" id="f-category" value="${escapeHtml(existing?.category || '')}"></div>
         <div class="hint">يتم الحفظ تلقائيًا أثناء الكتابة.</div>
