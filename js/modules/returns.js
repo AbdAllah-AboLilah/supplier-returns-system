@@ -640,7 +640,7 @@ export async function renderReturnDetail(container, returnId) {
                    </span>`
                 : `<span class="${l.costIsFallback ? 'cost-fallback-text' : ''}" title="${l.costIsFallback ? 'تكلفة النظام الافتراضية — لسه محدّدتش تكلفة هذا المورد الفعلية' : ''}">${fmtMoney(l.unitCost)}</span>`}</td>
               <td class="num text-mono" id="line-total-${l.id}" data-label="الإجمالي">${fmtMoney(l.total)}</td>
-              <td data-label="نوع المعالجة">
+              <td data-label="نوع المعالجة"><div class="resolution-cell">
                 <select class="line-resolution" data-id="${l.id}" ${editable ? '' : 'disabled'}>
                   <option value="credit" ${l.resolutionType !== 'exchange' ? 'selected' : ''}>دائن</option>
                   <option value="exchange" ${l.resolutionType === 'exchange' ? 'selected' : ''}>استبدال</option>
@@ -649,7 +649,7 @@ export async function renderReturnDetail(container, returnId) {
                     ? `<div class="mt-8"><span class="badge badge-erp-yes">✅ تم الاستلام</span></div>`
                     : `<div class="mt-8"><button class="btn btn-sm btn-ghost line-toggle-received" data-id="${l.id}">⏳ لسه — دوس لما تستلم</button></div>`
                   ) : ''}
-              </td>
+              </div></td>
               ${editable ? `<td><button class="btn btn-sm btn-ghost line-remove" data-id="${l.id}" data-name="${escapeHtml(l.supplierItemName || '')}">حذف</button></td>` : ''}
             </tr>
           `).join('')}
