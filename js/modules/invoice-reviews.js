@@ -16,7 +16,7 @@ import { getAll, getById, put, bulkPut, remove, getByIndex, removeWhere, nextSeq
 import { uid, nowIso, fmtMoney, fmtInt, fmtDate, escapeHtml, fuzzyIncludes, debounce,
          openModal, confirmDialog, toast, paginate, renderPagination, qs, qsa,
          renderPreservingFocus, guarded, closeOnOutsideClick, printHtmlDocument, submitOnce,
-         renderPickedErp, toLatinDigits } from '../core/utils.js';
+         renderPickedErp, toLatinDigits, numberField } from '../core/utils.js';
 import { autosaveField } from '../core/autosave.js';
 import { navigate } from '../core/router.js';
 import { openSupplierForm } from './suppliers.js';
@@ -517,13 +517,13 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
                     ? `<div class="mt-8"><span class="badge badge-warn">⚠️ غير مرتبط</span> <button class="btn btn-sm btn-ghost btn-link-erp" data-supplier-item-id="${i.supplierItemId}">ربط</button></div>`
                     : '')}
               </td>
-              <td class="num" data-label="الكمية"><input type="number" min="0" step="any" class="ln-qty" data-id="${i.id}" value="${i.qty}" style="width:80px;text-align:center;"></td>
+              <td class="num" data-label="الكمية">${numberField({ cls: 'ln-qty', value: i.qty, min: 0, step: 'any', width: '80px', align: 'center', attrs: `data-id="${i.id}"` })}</td>
               <td data-label="الوحدة">
                 <select class="ln-unit" data-id="${i.id}" data-prev-unit="${escapeHtml(i.unitKey || '')}">
                   ${units.map(u => `<option value="${u.key}" ${i.unitKey === u.key ? 'selected' : ''}>${escapeHtml(u.label)}</option>`).join('')}
                 </select>
               </td>
-              <td class="num" data-bulk-price data-label="سعر ${escapeHtml(withAl(c.unit.label))}"><input type="number" min="0" step="0.01" class="ln-price" data-id="${i.id}" value="${i.price}" style="width:90px;text-align:center;"></td>
+              <td class="num" data-bulk-price data-label="سعر ${escapeHtml(withAl(c.unit.label))}">${numberField({ cls: 'ln-price', value: i.price, min: 0, step: '0.01', width: '95px', align: 'center', attrs: `data-id="${i.id}"` })}</td>
               <td class="num" id="ln-piece-${i.id}" data-label="سعر القطعة المحسوب"><b>${fmtMoney(c.piecePrice)}</b></td>
               <td class="num text-dim" id="ln-actual-${i.id}" data-label="الكمية الفعلية">${fmtInt(c.actualQty)} قطعة</td>
               <td class="num text-mono" id="ln-total-${i.id}" data-label="الإجمالي">${fmtMoney(c.total)}</td>
@@ -551,12 +551,12 @@ export async function renderInvoiceReviewDetail(container, reviewId) {
             <div class="picked-erp" id="add-item-erp" style="display:none;"></div>
             <div class="hint" id="add-item-supplier-hint"${review.supplierId ? ' style="display:none;"' : ''}>اختار المورد فوق عشان تقدر تختار من أصنافه أو تضيف صنف جديد ليه.</div>
           </div>
-          <div class="field" style="flex:0 0 90px;"><label>الكمية</label><input type="number" id="add-qty" min="0" step="any" placeholder="0"></div>
+          <div class="field" style="flex:0 0 90px;"><label>الكمية</label>${numberField({ id: 'add-qty', min: 0, step: 'any', placeholder: '0' })}</div>
           <div class="field" style="flex:0 0 120px;">
             <div class="field-label-row"><label style="margin:0;">الوحدة</label><a href="#" id="btn-manage-units" class="small">إدارة الوحدات</a></div>
             <select id="add-unit">${units.map(u => `<option value="${u.key}">${escapeHtml(u.label)}</option>`).join('')}</select>
           </div>
-          <div class="field" style="flex:0 0 130px;"><label id="add-price-label">سعر الوحدة</label><input type="number" id="add-price" min="0" step="0.01" placeholder="0.00"></div>
+          <div class="field" style="flex:0 0 130px;"><label id="add-price-label">سعر الوحدة</label>${numberField({ id: 'add-price', min: 0, step: '0.01', placeholder: '0.00' })}</div>
           <div class="field" style="flex:0 0 110px;"><label>الإجمالي</label><div class="field-readout" id="add-total">0.00</div></div>
           <div class="field" style="flex:0 0 auto;"><button class="btn btn-primary" id="btn-add-line">+ إضافة</button></div>
         </div>
@@ -1024,7 +1024,7 @@ function openUnitsManagerModal(onDone) {
         </table>
         <div class="form-row mt-16" style="align-items:flex-end;">
           <div class="field" style="flex:2;"><label>اسم الوحدة الجديدة</label><input type="text" id="f-unit-label" placeholder="مثال: كرتونة"></div>
-          <div class="field" style="flex:0 0 120px;"><label>= كام قطعة</label><input type="number" id="f-unit-mult" min="1" step="1" value="1"></div>
+          <div class="field" style="flex:0 0 120px;"><label>= كام قطعة</label>${numberField({ id: 'f-unit-mult', min: 1, step: '1', value: 1 })}</div>
           <div class="field" style="flex:0 0 auto;"><button class="btn btn-primary" id="btn-add-unit">+ إضافة</button></div>
         </div>
       `,

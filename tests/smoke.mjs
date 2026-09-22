@@ -234,8 +234,13 @@ try {
     const arabicIndic = /[\u0660-\u0669]/;
     const offenders = [];
     document.querySelectorAll('#app-content td, #app-content .stat-value, #app-content .small').forEach(el => {
-      if (el.querySelector('input, select')) return;      // inputs always render Latin digits
+      if (el.querySelector('input, select')) return;      // a field holds its value, not text — read below
       if (arabicIndic.test(el.textContent)) offenders.push(el.textContent.trim().slice(0, 40));
+    });
+    // Including the fields themselves, which is where the mixing showed:
+    // a browser in Arabic drew its own numerals in every one of them.
+    document.querySelectorAll('#app-content input').forEach(el => {
+      if (arabicIndic.test(el.value)) offenders.push(`[field] ${el.value}`);
     });
     return offenders;
   });
@@ -1187,6 +1192,132 @@ try {
   check('and typing the same number in Latin still works', latinQty === '12.5', latinQty);
   await page.fill('#add-qty', '');
   await page.fill('#add-price', '');
+
+  // ---------- the value in a field is drawn by us, not by the browser ----------
+  // What sent this: a screenshot of the review table where every quantity
+  // and price read ٤٣ ١١٠٠ ١٦٫٥ while every total beside them read
+  // 72,240.00. <input type="number"> prints its value in the browser's own
+  // language — an Arabic Chrome, Arabic digits — and nothing on the page
+  // can turn that off. So there are none of them left.
+  const fields = await page.evaluate(() => {
+    const ours = [...document.querySelectorAll('#app-content input[data-numeric]')];
+    return {
+      native: document.querySelectorAll('#app-content input[type=number]').length,
+      count: ours.length,
+      arabic: ours.map(i => i.value).filter(v => /[٠-٩۰-۹٫٬]/.test(v)),
+      keypad: ours.every(i => i.getAttribute('inputmode') === 'decimal'),
+      steppers: document.querySelectorAll('#app-content .num-field .num-step').length,
+    };
+  });
+  check('no field is left for the browser to draw its own numerals in',
+        fields.native === 0 && fields.count >= 4 && fields.arabic.length === 0 && fields.keypad,
+        JSON.stringify(fields));
+  check('and every one of them still carries a spinner',
+        fields.steppers === fields.count * 2, `${fields.steppers} buttons for ${fields.count} fields`);
+
+  // The three ways the native field could be stepped, all still there —
+  // plus the tap, which a phone never had at all.
+  const qtyOf = () => page.$eval('tr[data-line="ivmix-piece"] .ln-qty', el => el.value);
+  const qtyStart = await qtyOf();                        // the fixture's 30
+  await page.click('tr[data-line="ivmix-piece"] .ln-qty');
+  await page.keyboard.press('ArrowUp');
+  await page.keyboard.press('ArrowUp');
+  const afterArrows = await qtyOf();
+  await page.mouse.wheel(0, -120);
+  await page.waitForTimeout(80);
+  const afterWheel = await qtyOf();
+  await page.click('tr[data-line="ivmix-piece"] .num-step[data-dir="-1"]');
+  await page.waitForTimeout(80);
+  const afterSpinner = await qtyOf();
+  check('arrow, wheel and spinner all still step the field',
+        afterArrows === '32' && afterWheel === '33' && afterSpinner === '32',
+        JSON.stringify({ qtyStart, afterArrows, afterWheel, afterSpinner }));
+
+  // Stepping is an edit like any other: it has to reach the line total and
+  // the record, the way the native field's arrows used to.
+  await page.waitForTimeout(900);
+  const stepSaved = await page.evaluate(async () => {
+    const db = await import('/js/core/db.js');
+    return {
+      qty: (await db.getById('invoiceReviewItems', 'ivmix-piece')).qty,
+      total: document.querySelector('#ln-total-ivmix-piece')?.textContent.trim(),
+    };
+  });
+  check('and what it steps to is saved and totalled',
+        stepSaved.qty === 32 && stepSaved.total === '6,560.00', JSON.stringify(stepSaved));
+
+  // Back to what the fixture holds, so the checks after this one read the
+  // invoice they were written against.
+  await page.fill('tr[data-line="ivmix-piece"] .ln-qty', '30');
+  await page.evaluate(() => document.querySelector('tr[data-line="ivmix-piece"] .ln-qty').blur());
+  await page.waitForTimeout(700);
+
+  // A step lands on the step's own precision, and stops at the field's
+  // floor instead of running past it into a negative quantity.
+  await page.fill('#add-price', '12');
+  await page.click('#add-price');
+  await page.keyboard.press('ArrowUp');
+  const pricedStep = await page.$eval('#add-price', el => el.value);
+  await page.fill('#add-qty', '');
+  await page.click('#add-qty');
+  await page.keyboard.press('ArrowDown');
+  const qtyFloor = await page.$eval('#add-qty', el => el.value);
+  check('a price steps by its own step, a quantity stops at zero',
+        pricedStep === '12.01' && qtyFloor === '0',
+        JSON.stringify({ pricedStep, qtyFloor }));
+
+  // The native field refused everything that was not a number. This one is
+  // a text field, so the refusing is ours to do.
+  await page.fill('#add-price', '');
+  await page.click('#add-price');
+  await page.keyboard.type('ا12س.5', { delay: 30 });
+  const lettersDropped = await page.$eval('#add-price', el => el.value);
+  await page.fill('#add-price', '');
+  await page.click('#add-price');
+  await page.keyboard.type('1.2.3', { delay: 30 });
+  const oneDotOnly = await page.$eval('#add-price', el => el.value);
+  check('letters and a second decimal point never land in a number field',
+        lettersDropped === '12.5' && oneDotOnly === '1.23',
+        JSON.stringify({ lettersDropped, oneDotOnly }));
+  await page.fill('#add-qty', '');
+  await page.fill('#add-price', '');
+
+  // A value written into the field for the person — a folded Arabic digit
+  // — used to leave the field without firing 'change' at all: Chrome drops
+  // its own "edited" mark the moment a script touches the value. On a line
+  // price that is the event that pushes the cost out to the supplier, so a
+  // price typed on an Arabic keyboard was never pushed.
+  await page.evaluate(() => {
+    window.__numChanges = [];
+    document.addEventListener('change', (e) => {
+      if (e.target.matches && e.target.matches('input[data-numeric]')) window.__numChanges.push(e.target.value);
+    }, true);
+  });
+  const commitPrice = async (text) => {
+    await page.evaluate(() => {
+      const el = document.querySelector('#add-price');
+      el.blur(); el.value = '';                       // reset without focusing it
+      window.__numChanges = [];
+    });
+    await page.click('#add-price');
+    await page.keyboard.type(text, { delay: 30 });
+    await page.keyboard.press('Tab');
+    await page.waitForTimeout(200);
+    return page.evaluate(() => ({
+      changes: window.__numChanges.slice(),
+      value: document.querySelector('#add-price').value,
+    }));
+  };
+  const latinCommit = await commitPrice('123');
+  const arabicCommit = await commitPrice('٤٥٦');
+  const partialCommit = await commitPrice('12.');
+  check('a number typed on an Arabic keyboard is committed on the way out, once',
+        latinCommit.changes.join() === '123' && arabicCommit.changes.join() === '456',
+        JSON.stringify({ latin: latinCommit.changes, arabic: arabicCommit.changes }));
+  check('and a half-typed "12." is tidied to the number it saved, without a second one',
+        partialCommit.value === '12' && partialCommit.changes.length === 1,
+        JSON.stringify(partialCommit));
+  await page.evaluate(() => { const el = document.querySelector('#add-price'); el.blur(); el.value = ''; });
 
   // ---------- every row is labelled by its own unit ----------
   // Reported from a phone: a line entered by the piece read

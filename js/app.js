@@ -4,7 +4,7 @@
 // in js/core and js/modules.
 // =========================================================
 import { registerRoute, initRouter, navigate } from './core/router.js';
-import { qs, qsa, toast, wireArabicNumberInput } from './core/utils.js';
+import { qs, qsa, toast, wireNumericFields } from './core/utils.js';
 import { APP_VERSION } from './core/version.js';
 import { getSyncStatus, onSyncStatusChange } from './core/sync-status.js';
 
@@ -76,9 +76,10 @@ qs('#app-content').innerHTML = '<div class="empty-state"><div class="empty-icon"
     // Not fatal — fall through and let the router attempt to load
     // normally; individual screens will surface their own errors.
   }
-  // Registered once for the whole app: an Arabic keyboard's digits reach
-  // a number field as Latin instead of being dropped on the floor.
-  wireArabicNumberInput();
+  // Registered once for the whole app: every field you type a number into
+  // filters what reaches it, folds an Arabic keyboard's digits to Latin,
+  // and steps by arrow key, wheel and spinner.
+  wireNumericFields();
   initRouter(qs('#app-content'), onNavigate);
 })();
 
